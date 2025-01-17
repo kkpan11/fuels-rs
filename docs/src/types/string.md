@@ -1,4 +1,4 @@
-# String
+# `String`
 
 The Rust SDK represents Fuel's `String`s as `SizedAsciiString<LEN>`, where the generic parameter `LEN` is the length of a given string. This abstraction is necessary because all strings in Fuel and Sway are statically-sized, i.e., you must know the size of the string beforehand.
 
@@ -14,8 +14,4 @@ To make working with `SizedAsciiString`s easier, you can use `try_into()` to con
 {{#include ../../../packages/fuels-core/src/types/core/sized_ascii_string.rs:conversion}}
 ```
 
-If your contract's method takes and returns, for instance, a Sway's `str[23]`. When using the SDK, this method will take and return a `SizedAsciiString<23>`, and you can pass a string to it like this:
-
-```rust,ignore
-{{#include ../../../packages/fuels/tests/bindings.rs:contract_takes_string}}
-```
+If your contract's method takes and returns, for instance, a Sway's `str[23]`. When using the SDK, this method will take and return a `SizedAsciiString<23>`.

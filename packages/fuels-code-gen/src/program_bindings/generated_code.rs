@@ -41,7 +41,7 @@ impl GeneratedCode {
                     panic,
                 };
 
-                use #lib::{string::ToString, format, vec};
+                use #lib::{string::ToString, format, vec, default::Default};
 
         }
     }
@@ -61,6 +61,7 @@ impl GeneratedCode {
                 let code = generated_code.code();
                 quote! {
                     #[allow(clippy::too_many_arguments)]
+                    #[allow(clippy::disallowed_names)]
                     #[no_implicit_prelude]
                     pub mod #mod_name {
                         #prelude
@@ -175,6 +176,7 @@ mod tests {
         // then
         let expected_code = quote! {
             #[allow(clippy::too_many_arguments)]
+            #[allow(clippy::disallowed_names)]
             #[no_implicit_prelude]
             pub mod a_mod {
                 use ::core::{
@@ -186,7 +188,7 @@ mod tests {
                     panic,
                 };
 
-                use ::std::{string::ToString, format, vec};
+                use ::std::{string::ToString, format, vec, default::Default};
 
                 struct SomeType;
             }
@@ -242,18 +244,20 @@ mod tests {
                     marker::Sized,
                     panic,
                 };
-                use ::std::{string::ToString, format, vec};
+                use ::std::{string::ToString, format, vec, default::Default};
         };
 
         let expected_code = quote! {
             struct TopLevelStruct;
             #[allow(clippy::too_many_arguments)]
+            #[allow(clippy::disallowed_names)]
             #[no_implicit_prelude]
             pub mod common_mod {
                 #prelude
 
                 struct SomeStruct2;
                 #[allow(clippy::too_many_arguments)]
+                #[allow(clippy::disallowed_names)]
                 #[no_implicit_prelude]
                 pub mod deeper_mod {
                     #prelude
@@ -261,6 +265,7 @@ mod tests {
                 }
             }
             #[allow(clippy::too_many_arguments)]
+            #[allow(clippy::disallowed_names)]
             #[no_implicit_prelude]
             pub mod different_mod {
                 #prelude
@@ -343,6 +348,6 @@ mod tests {
     }
 
     fn given_type_path(path: &str) -> TypePath {
-        TypePath::new(path).expect("Hand crafted, should be valid.")
+        TypePath::new(path).expect("hand crafted, should be valid")
     }
 }

@@ -10,41 +10,34 @@ repository = { workspace = true }
 rust-version = { workspace = true }
 description = "Fuel Rust SDK."
 
+[package.metadata.cargo-machete]
+ignored = ["fuel-core"]
+
 [dependencies]
-fuel-core = { workspace = true, default-features = false, optional = true }
 fuel-core-client = { workspace = true, optional = true }
+fuel-crypto = { workspace = true }
 fuel-tx = { workspace = true }
-fuels-accounts = { workspace = true, optional = true }
+fuels-accounts = { workspace = true, default-features = false }
 fuels-core = { workspace = true }
 fuels-macros = { workspace = true }
-fuels-programs = { workspace = true, optional = true }
+fuels-programs = { workspace = true }
 fuels-test-helpers = { workspace = true, optional = true }
 
-[dev-dependencies]
-chrono = { workspace = true }
-fuel-core = { workspace = true, default-features = false }
-fuel-core-types = { workspace = true }
-hex = { workspace = true, default-features = false }
-sha2 = { workspace = true }
-tempfile = { workspace = true }
-tokio = { workspace = true }
-
 [features]
-default = ["std", "fuels-test-helpers?/fuels-accounts"]
+default = ["std", "fuels-test-helpers?/fuels-accounts", "coin-cache"]
+coin-cache = ["fuels-accounts/coin-cache"]
+test-helpers = ["dep:fuels-test-helpers", "fuels-accounts/test-helpers"]
+
 # The crates enabled via `dep:` below are not currently wasm compatible, as
 # such they are only available if `std` is enabled. The `dep:` syntax was
 # used so that we don't get a new feature flag for every optional dependency.
 std = [
-    "dep:fuel-core-client",
-    "dep:fuels-accounts",
-    "dep:fuels-programs",
-    "dep:fuels-test-helpers",
-    "fuels-programs?/std",
-    "fuels-core/std",
-    "fuels-accounts?/std",
-    "fuels-test-helpers?/std",
+  "dep:fuel-core-client",
+  "fuels-programs/std",
+  "dep:fuels-test-helpers",
+  "fuels-accounts/std",
+  "fuels-core/std",
+  "fuels-test-helpers?/std",
 ]
-# TODO: To be removed once https://github.com/FuelLabs/fuels-rs/issues/881 is unblocked.
-test-type-paths = []
-fuel-core-lib = ["fuels-test-helpers?/fuel-core-lib", "dep:fuel-core"]
-rocksdb = ["fuel-core?/rocksdb"]
+fuel-core-lib = ["fuels-test-helpers?/fuel-core-lib"]
+rocksdb = ["fuels-test-helpers?/rocksdb"]

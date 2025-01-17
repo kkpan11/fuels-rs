@@ -3,29 +3,30 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use fuels_code_gen::{utils::ident, Abigen, AbigenTarget, ProgramType};
-use proc_macro2::{Ident, TokenStream};
+use fuels_code_gen::{utils::ident, Abi, Abigen, AbigenTarget, ProgramType};
+use proc_macro2::{Ident, Span, TokenStream};
 use quote::quote;
-use rand::{rngs::StdRng, Rng, SeedableRng};
 use syn::LitStr;
 
 use crate::setup_program_test::parsing::{
-    AbigenCommand, DeployContractCommand, InitializeWalletCommand, LoadScriptCommand,
-    TestProgramCommands,
+    AbigenCommand, BuildProfile, DeployContractCommand, InitializeWalletCommand, LoadScriptCommand,
+    SetOptionsCommand, TestProgramCommands,
 };
 
 pub(crate) fn generate_setup_program_test_code(
     commands: TestProgramCommands,
 ) -> syn::Result<TokenStream> {
     let TestProgramCommands {
+        set_options,
         initialize_wallets,
         generate_bindings,
         deploy_contract,
         load_scripts,
     } = commands;
 
-    let project_lookup = generate_project_lookup(&generate_bindings)?;
-    let abigen_code = abigen_code(&project_lookup);
+    let SetOptionsCommand { profile } = set_options.unwrap_or_default();
+    let project_lookup = generate_project_lookup(&generate_bindings, profile)?;
+    let abigen_code = abigen_code(&project_lookup)?;
     let wallet_code = wallet_initialization_code(initialize_wallets);
     let deploy_code = contract_deploying_code(&deploy_contract, &project_lookup);
     let script_code = script_loading_code(&load_scripts, &project_lookup);
@@ -38,12 +39,15 @@ pub(crate) fn generate_setup_program_test_code(
     })
 }
 
-fn generate_project_lookup(commands: &AbigenCommand) -> syn::Result<HashMap<String, Project>> {
+fn generate_project_lookup(
+    commands: &AbigenCommand,
+    profile: BuildProfile,
+) -> syn::Result<HashMap<String, Project>> {
     let pairs = commands
         .targets
         .iter()
         .map(|command| -> syn::Result<_> {
-            let project = Project::new(command.program_type, &command.project)?;
+            let project = Project::new(command.program_type, &command.project, profile.clone())?;
             Ok((command.name.value(), project))
         })
         .collect::<Result<Vec<_>, _>>()?;
@@ -51,18 +55,26 @@ fn generate_project_lookup(commands: &AbigenCommand) -> syn::Result<HashMap<Stri
     Ok(pairs.into_iter().collect())
 }
 
-fn abigen_code(project_lookup: &HashMap<String, Project>) -> TokenStream {
-    let targets = generate_abigen_targets(project_lookup);
-    Abigen::generate(targets, false).expect("Failed to generate abigen")
+fn abigen_code(project_lookup: &HashMap<String, Project>) -> syn::Result<TokenStream> {
+    let targets = parse_abigen_targets(project_lookup)?;
+
+    Ok(Abigen::generate(targets, false).expect("abigen generation failed"))
 }
 
-fn generate_abigen_targets(project_lookup: &HashMap<String, Project>) -> Vec<AbigenTarget> {
+fn parse_abigen_targets(
+    project_lookup: &HashMap<String, Project>,
+) -> syn::Result<Vec<AbigenTarget>> {
     project_lookup
         .iter()
-        .map(|(name, project)| AbigenTarget {
-            name: name.clone(),
-            abi: project.abi_path(),
-            program_type: project.program_type,
+        .map(|(name, project)| {
+            let source = Abi::load_from(project.abi_path())
+                .map_err(|e| syn::Error::new(project.path_span, e.to_string()))?;
+
+            Ok(AbigenTarget::new(
+                name.clone(),
+                source,
+                project.program_type,
+            ))
         })
         .collect()
 }
@@ -82,12 +94,13 @@ fn wallet_initialization_code(maybe_command: Option<InitializeWalletCommand>) ->
 
     let num_wallets = wallet_names.len();
     quote! {
-        let [#(#wallet_names),*]: [_; #num_wallets] = launch_custom_provider_and_get_wallets(
-            WalletsConfig::new(Some(#num_wallets as u64), None, None),
+        let [#(#wallet_names),*]: [_; #num_wallets] = ::fuels::test_helpers::launch_custom_provider_and_get_wallets(
+            ::fuels::test_helpers::WalletsConfig::new(Some(#num_wallets as u64), None, None),
             None,
             None,
         )
         .await
+        .expect("Error while trying to fetch wallets from the custom provider")
         .try_into()
         .expect("Should have the exact number of wallets");
     }
@@ -108,32 +121,46 @@ fn contract_deploying_code(
     commands
         .iter()
         .map(|command| {
-            // Generate random salt for contract deployment
-            let mut rng = StdRng::from_entropy();
-            let salt: [u8; 32] = rng.gen();
-
             let contract_instance_name = ident(&command.name);
             let contract_struct_name = ident(&command.contract.value());
             let wallet_name = ident(&command.wallet);
+            let random_salt = command.random_salt;
 
             let project = project_lookup
                 .get(&command.contract.value())
                 .expect("Project should be in lookup");
             let bin_path = project.bin_path();
-            let storage_path = project.storage_path();
+
+            let salt = if random_salt {
+                quote! {
+                    // Generate random salt for contract deployment.
+                    // These lines must be inside the `quote!` macro, otherwise the salt remains
+                    // identical between macro compilation, causing contract id collision.
+                    ::fuels::test_helpers::generate_random_salt()
+                }
+            } else {
+                quote! { [0; 32] }
+            };
 
             quote! {
+                let salt: [u8; 32] = #salt;
+
                 let #contract_instance_name = {
-                    let storage_config = StorageConfiguration::load_from(#storage_path)
-                                            .expect("Failed to load storage slots from path");
-                    let load_config =
-                        LoadConfiguration::default()
-                            .set_storage_configuration(storage_config)
-                            .set_salt([#(#salt),*]);
+                    let load_config = ::fuels::programs::contract::LoadConfiguration::default().with_salt(salt);
 
-                    let loaded_contract = Contract::load_from(#bin_path, load_config).expect("Failed to load the contract");
+                    let loaded_contract = ::fuels::programs::contract::Contract::load_from(
+                        #bin_path,
+                        load_config
+                    )
+                    .expect("Failed to load the contract");
 
-                    let contract_id = loaded_contract.deploy(&#wallet_name, TxParameters::default()).await.expect("Failed to deploy the contract");
+                    let contract_id = loaded_contract.deploy_if_not_exists(
+                        &#wallet_name,
+                        ::fuels::types::transaction::TxPolicies::default()
+                    )
+                    .await
+                    .expect("Failed to deploy the contract");
+
                     #contract_struct_name::new(contract_id, #wallet_name.clone())
                 };
             }
@@ -175,23 +202,37 @@ fn script_loading_code(
 struct Project {
     program_type: ProgramType,
     path: PathBuf,
+    path_span: Span,
+    profile: BuildProfile,
 }
 
 impl Project {
-    fn new(program_type: ProgramType, dir: &LitStr) -> syn::Result<Self> {
+    fn new(program_type: ProgramType, dir: &LitStr, profile: BuildProfile) -> syn::Result<Self> {
         let path = Path::new(&dir.value()).canonicalize().map_err(|_| {
             syn::Error::new_spanned(
                 dir.clone(),
-                "Unable to canonicalize forc project path. Make sure the path is valid!",
+                "unable to canonicalize forc project path. Make sure the path is valid!",
             )
         })?;
 
-        Ok(Self { program_type, path })
+        Ok(Self {
+            program_type,
+            path,
+            path_span: dir.span(),
+            profile,
+        })
     }
 
     fn compile_file_path(&self, suffix: &str, description: &str) -> String {
         self.path
-            .join(["out/debug/", self.project_name(), suffix].concat())
+            .join(
+                [
+                    format!("out/{}/", &self.profile).as_str(),
+                    self.project_name(),
+                    suffix,
+                ]
+                .concat(),
+            )
             .to_str()
             .unwrap_or_else(|| panic!("could not join path for {description}"))
             .to_string()
@@ -211,9 +252,5 @@ impl Project {
 
     fn bin_path(&self) -> String {
         self.compile_file_path(".bin", "the binary file")
-    }
-
-    fn storage_path(&self) -> String {
-        self.compile_file_path("-storage_slots.json", "the storage slots file")
     }
 }

@@ -9,13 +9,13 @@ The parameters for a contract call are:
 3. Gas forwarded
 <!-- call_params:example:end -->
 
-You can use these to forward coins to a contract. You can configure these parameters by creating an instance of [`CallParameters`](https://docs.rs/fuels/latest/fuels/programs/contract/struct.CallParameters.html) and passing it to a chain method called `call_params`.
+You can use these to forward coins to a contract. You can configure these parameters by creating an instance of [`CallParameters`](https://docs.rs/fuels/latest/fuels/programs/calls/struct.CallParameters.html) and passing it to a chain method called `call_params`.
 <!-- use_call_params:example:end -->
 
 For instance, suppose the following contract that uses Sway's `msg_amount()` to return the amount sent in that transaction.
 
 ```rust,ignore
-{{#include ../../../packages/fuels/tests/contracts/contract_test/src/main.sw:msg_amount}}
+{{#include ../../../e2e/sway/contracts/contract_test/src/main.sw:msg_amount}}
 ```
 
 Then, in Rust, after setting up and deploying the above contract, you can configure the amount being sent in the transaction like this:
@@ -28,10 +28,10 @@ Then, in Rust, after setting up and deploying the above contract, you can config
 <!-- payable:example:start -->
 `call_params` returns a result to ensure you don't forward assets to a contract method that isn't payable.
 <!-- payable:example:end -->
-In the following example, we try to forward an amount of 100 of the base asset to `non_payable`. As its name suggests, `non_payable` isn't annotated with `#[payable]` in the contract code. Passing `CallParameters` with an amount other than 0 leads to an `InvalidCallParameters` error:
+In the following example, we try to forward an amount of `100` of the base asset to `non_payable`. As its name suggests, `non_payable` isn't annotated with `#[payable]` in the contract code. Passing `CallParameters` with an amount other than `0` leads to an error:
 
 ```rust,ignore
-{{#include ../../../packages/fuels/tests/contracts.rs:non_payable_params}}
+{{#include ../../../e2e/tests/contracts.rs:non_payable_params}}
 ```
 
 > **Note:** forwarding gas to a contract call is always possible, regardless of the contract method being non-payable.

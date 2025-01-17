@@ -1,73 +1,114 @@
-use fuel_tx::{ConsensusParameters, Output, Receipt};
-use fuel_types::MessageId;
-use fuels_core::{
-    constants::BASE_ASSET_ID,
-    types::{bech32::Bech32Address, input::Input, transaction_builders::TransactionBuilder},
+use fuel_tx::{AssetId, Output, Receipt, UtxoId};
+use fuel_types::Nonce;
+use fuels_core::types::{
+    bech32::Bech32Address,
+    coin::Coin,
+    coin_type::CoinType,
+    coin_type_id::CoinTypeId,
+    errors::{error, Error, Result},
+    input::Input,
+    transaction_builders::TransactionBuilder,
 };
+use itertools::{Either, Itertools};
 
-pub fn extract_message_id(receipts: &[Receipt]) -> Option<MessageId> {
-    receipts.iter().find_map(|m| m.message_id())
+use crate::provider::Provider;
+
+pub fn extract_message_nonce(receipts: &[Receipt]) -> Option<Nonce> {
+    receipts.iter().find_map(|m| m.nonce()).copied()
 }
 
-pub fn calculate_base_amount_with_fee(
+pub async fn calculate_missing_base_amount(
     tb: &impl TransactionBuilder,
-    consensus_params: &ConsensusParameters,
-    previous_base_amount: u64,
-) -> u64 {
-    let transaction_fee = tb
-        .fee_checked_from_tx(consensus_params)
-        .expect("Error calculating TransactionFee");
+    available_base_amount: u64,
+    reserved_base_amount: u64,
+    provider: &Provider,
+) -> Result<u64> {
+    let max_fee = tb.estimate_max_fee(provider).await?;
 
-    let mut new_base_amount = transaction_fee.max_fee() + previous_base_amount;
+    let total_used = max_fee + reserved_base_amount;
+    let missing_amount = if total_used > available_base_amount {
+        total_used - available_base_amount
+    } else if !is_consuming_utxos(tb) {
+        // A tx needs to have at least 1 spendable input
+        // Enforce a minimum required amount on the base asset if no other inputs are present
+        1
+    } else {
+        0
+    };
 
-    // If the tx doesn't consume any UTXOs, attempting to repeat it will lead to an
-    // error due to non unique tx ids (e.g. repeated contract call with configured gas cost of 0).
-    // Here we enforce a minimum amount on the base asset to avoid this
-    let is_consuming_utxos = tb
-        .inputs()
-        .iter()
-        .any(|input| !matches!(input, Input::Contract { .. }));
-    const MIN_AMOUNT: u64 = 1;
-    if !is_consuming_utxos && new_base_amount == 0 {
-        new_base_amount = MIN_AMOUNT;
-    }
-    new_base_amount
+    Ok(missing_amount)
 }
 
-// Replace the current base asset inputs of a tx builder with the provided ones.
-// Only signed resources and coin predicates are replaced, the remaining inputs are kept.
-// Messages that contain data are also kept since we don't know who will consume the data.
-pub fn adjust_inputs(
-    tb: &mut impl TransactionBuilder,
-    new_base_inputs: impl IntoIterator<Item = Input>,
-) {
-    let adjusted_inputs = tb
-        .inputs()
-        .iter()
-        .filter(|input| {
-            input.contains_data()
-                || !matches!(input , Input::ResourceSigned { resource , .. }
-                | Input::ResourcePredicate { resource, .. } if resource.asset_id() == BASE_ASSET_ID)
+pub fn available_base_assets_and_amount(
+    tb: &impl TransactionBuilder,
+    base_asset_id: &AssetId,
+) -> (Vec<CoinTypeId>, u64) {
+    let mut sum = 0;
+    let iter =
+        tb.inputs()
+            .iter()
+            .filter_map(|input| match input {
+                Input::ResourceSigned { resource, .. }
+                | Input::ResourcePredicate { resource, .. } => match resource {
+                    CoinType::Coin(Coin {
+                        amount, asset_id, ..
+                    }) if asset_id == base_asset_id => {
+                        sum += amount;
+                        resource.id()
+                    }
+                    CoinType::Message(message) => {
+                        sum += message.amount;
+                        resource.id()
+                    }
+                    _ => None,
+                },
+                _ => None,
+            })
+            .collect_vec();
+
+    (iter, sum)
+}
+
+pub fn split_into_utxo_ids_and_nonces(
+    excluded_coins: Option<Vec<CoinTypeId>>,
+) -> (Vec<UtxoId>, Vec<Nonce>) {
+    excluded_coins
+        .map(|excluded_coins| {
+            excluded_coins
+                .iter()
+                .partition_map(|coin_id| match coin_id {
+                    CoinTypeId::UtxoId(utxo_id) => Either::Left(*utxo_id),
+                    CoinTypeId::Nonce(nonce) => Either::Right(*nonce),
+                })
         })
-        .cloned()
-        .chain(new_base_inputs)
-        .collect();
-
-    *tb.inputs_mut() = adjusted_inputs
+        .unwrap_or_default()
 }
 
-pub fn adjust_outputs(
+fn is_consuming_utxos(tb: &impl TransactionBuilder) -> bool {
+    tb.inputs()
+        .iter()
+        .any(|input| !matches!(input, Input::Contract { .. }))
+}
+
+pub fn add_base_change_if_needed(
     tb: &mut impl TransactionBuilder,
     address: &Bech32Address,
-    new_base_amount: u64,
+    base_asset_id: &AssetId,
 ) {
     let is_base_change_present = tb.outputs().iter().any(|output| {
         matches!(output , Output::Change { asset_id , .. }
-                                        if asset_id == & BASE_ASSET_ID)
+                                        if asset_id == base_asset_id)
     });
 
-    if !is_base_change_present && new_base_amount != 0 {
+    if !is_base_change_present {
         tb.outputs_mut()
-            .push(Output::change(address.into(), 0, BASE_ASSET_ID));
+            .push(Output::change(address.into(), 0, *base_asset_id));
     }
+}
+
+pub(crate) fn try_provider_error() -> Error {
+    error!(
+        Other,
+        "no provider available. Make sure to use `set_provider`"
+    )
 }

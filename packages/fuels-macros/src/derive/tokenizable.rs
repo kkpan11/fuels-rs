@@ -1,3 +1,4 @@
+use itertools::Itertools;
 use proc_macro2::{Ident, TokenStream};
 use quote::quote;
 use syn::{Data, DataEnum, DataStruct, DeriveInput, Error, Generics, Result};
@@ -7,7 +8,7 @@ use crate::{
         utils,
         utils::{find_attr, get_path_from_attr_or, std_lib_path},
     },
-    parse_utils::{extract_struct_members, validate_and_extract_generic_types},
+    parse_utils::{validate_and_extract_generic_types, Members},
 };
 
 pub fn generate_tokenizable_impl(input: DeriveInput) -> Result<TokenStream> {
@@ -46,12 +47,13 @@ fn tokenizable_for_struct(
     fuels_core_path: TokenStream,
     no_std: bool,
 ) -> Result<TokenStream> {
+    validate_and_extract_generic_types(&generics)?;
     let (impl_gen, type_gen, where_clause) = generics.split_for_impl();
     let struct_name_str = name.to_string();
-    let members = extract_struct_members(contents, fuels_core_path.clone())?;
+    let members = Members::from_struct(contents, fuels_core_path.clone())?;
     let field_names = members.names().collect::<Vec<_>>();
+    let ignored_field_names = members.ignored_names().collect_vec();
 
-    validate_and_extract_generic_types(&generics)?;
     let std_lib = std_lib_path(no_std);
 
     Ok(quote! {
@@ -67,16 +69,34 @@ fn tokenizable_for_struct(
                         let mut tokens_iter = tokens.into_iter();
                         let mut next_token = move || { tokens_iter
                             .next()
-                            .ok_or_else(|| { #fuels_types_path::errors::Error::InstantiationError(#std_lib::format!("Ran out of tokens before '{}' has finished construction.", #struct_name_str)) })
+                            .ok_or_else(|| {
+                                #fuels_types_path::errors::Error::Codec(
+                                    #std_lib::format!(
+                                        "ran out of tokens before `{}` has finished construction",
+                                        #struct_name_str
+                                        )
+                                    )
+                                }
+                            )
                         };
                         ::core::result::Result::Ok(Self {
                             #(
-                                #field_names: #fuels_core_path::traits::Tokenizable::from_token(next_token()?)?
-                             ),*
+                                #field_names: #fuels_core_path::traits::Tokenizable::from_token(next_token()?)?,
+                             )*
+                            #(#ignored_field_names: ::core::default::Default::default(),)*
 
                         })
                     },
-                    other => ::core::result::Result::Err(#fuels_types_path::errors::Error::InstantiationError(#std_lib::format!("Error while constructing '{}'. Expected token of type Token::Struct, got {:?}", #struct_name_str, other))),
+                    other => ::core::result::Result::Err(
+                        #fuels_types_path::errors::Error::Codec(
+                            #std_lib::format!(
+                                "error while constructing `{}`. Expected token of type `Token::Struct`, \
+                                got `{:?}`",
+                                #struct_name_str,
+                                other
+                            )
+                        )
+                    ),
                 }
             }
         }
@@ -91,13 +111,12 @@ fn tokenizable_for_enum(
     fuels_core_path: TokenStream,
     no_std: bool,
 ) -> Result<TokenStream> {
+    validate_and_extract_generic_types(&generics)?;
     let (impl_gen, type_gen, where_clause) = generics.split_for_impl();
     let name_stringified = name.to_string();
-    let variants = utils::extract_variants(&contents.variants, fuels_core_path.clone())?;
+    let variants = utils::extract_variants(contents.variants, fuels_core_path.clone())?;
     let discriminant_and_token = variants.variant_into_discriminant_and_token();
     let constructed_variant = variants.variant_from_discriminant_and_token(no_std);
-
-    validate_and_extract_generic_types(&generics)?;
 
     let std_lib = std_lib_path(no_std);
 
@@ -106,12 +125,16 @@ fn tokenizable_for_enum(
             fn into_token(self) -> #fuels_types_path::Token {
                 let (discriminant, token) = #discriminant_and_token;
 
-                let variants = match <Self as #fuels_core_path::traits::Parameterize>::param_type() {
-                    #fuels_types_path::param_types::ParamType::Enum{variants, ..} => variants,
-                    other => ::std::panic!("Calling {}::param_type() must return a ParamType::Enum but instead it returned: {:?}", #name_stringified, other)
+                let enum_variants = match <Self as #fuels_core_path::traits::Parameterize>::param_type() {
+                    #fuels_types_path::param_types::ParamType::Enum{enum_variants, ..} => enum_variants,
+                    other => ::std::panic!(
+                        "calling {}::param_type() must return a `ParamType::Enum` but instead it returned: `{:?}`",
+                        #name_stringified,
+                        other
+                    )
                 };
 
-                #fuels_types_path::Token::Enum(#std_lib::boxed::Box::new((discriminant, token, variants)))
+                #fuels_types_path::Token::Enum(#std_lib::boxed::Box::new((discriminant, token, enum_variants)))
             }
 
             fn from_token(token: #fuels_types_path::Token) -> #fuels_types_path::errors::Result<Self>
@@ -123,8 +146,18 @@ fn tokenizable_for_enum(
                         let (discriminant, variant_token, _) = *selector;
                         #constructed_variant
                     }
-                    _ => ::core::result::Result::Err(#std_lib::format!("Given token ({}) is not of the type Token::Enum.", token)),
-                }.map_err(|e| #fuels_types_path::errors::Error::InvalidData(#std_lib::format!("Error while instantiating {} from token! {}", #name_stringified, e)) )
+                    _ => ::core::result::Result::Err(
+                            #std_lib::format!("token `{}` is not of the type `Token::Enum`", token)
+                        ),
+                }.map_err(|e| {
+                    #fuels_types_path::errors::Error::Codec(
+                        #std_lib::format!(
+                            "error while instantiating `{}` from token `{}`",
+                            #name_stringified,
+                            e
+                        )
+                    )
+                })
             }
         }
     })

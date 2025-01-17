@@ -11,30 +11,38 @@ description = "Fuel Rust SDK accounts."
 
 [dependencies]
 async-trait = { workspace = true, default-features = false }
-bytes = { workspace = true, features = ["serde"] }
 chrono = { workspace = true }
+cynic = { workspace = true, optional = true }
 elliptic-curve = { workspace = true, default-features = false }
-eth-keystore =  { workspace = true }
-fuel-core = { workspace = true, default-features = false, optional = true }
-fuel-core-client = { workspace = true, features = ["default"] }
+eth-keystore = { workspace = true, optional = true }
+fuel-core-client = { workspace = true, optional = true }
+fuel-core-types = { workspace = true }
 fuel-crypto = { workspace = true, features = ["random"] }
 fuel-tx = { workspace = true }
 fuel-types = { workspace = true, features = ["random"] }
-fuel-vm = { workspace = true }
-fuels-core = { workspace = true }
-hex = { workspace = true, default-features = false, features = ["std"] }
+fuels-core = { workspace = true, default-features = false }
 itertools = { workspace = true }
 rand = { workspace = true, default-features = false }
-serde = { workspace = true, default-features = true, features = ["derive"] }
-sha2 = { workspace = true, default-features = false }
+semver = { workspace = true }
 tai64 = { workspace = true, features = ["serde"] }
 thiserror = { workspace = true, default-features = false }
-tokio = { workspace = true, features = ["full"] }
+tokio = { workspace = true, features = ["full"], optional = true }
+zeroize = { workspace = true, features = ["derive"] }
 
 [dev-dependencies]
-hex = { workspace = true, default-features = false, features = ["std"] }
+mockall = { workspace = true, default-features = false }
+fuel-tx = { workspace = true, features = ["test-helpers", "random"] }
 tempfile = { workspace = true }
+tokio = { workspace = true, features = ["test-util"] }
 
 [features]
 default = ["std"]
-std = ["fuels-core/std"]
+coin-cache = ["tokio?/time"]
+std = [
+  "fuels-core/std",
+  "dep:tokio",
+  "fuel-core-client/default",
+  "dep:eth-keystore",
+  "dep:cynic",
+]
+test-helpers = []

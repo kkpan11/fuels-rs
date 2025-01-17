@@ -27,7 +27,7 @@ mod setup_program_test;
 ///```text
 /// abigen!(Contract(
 ///         name = "MyContract",
-///         abi = "packages/fuels/tests/contracts/token_ops/out/debug/token_ops-abi.json"
+///         abi = "packages/fuels/tests/contracts/token_ops/out/release/token_ops-abi.json"
 ///     ));
 ///```
 ///
@@ -36,14 +36,18 @@ mod setup_program_test;
 pub fn abigen(input: TokenStream) -> TokenStream {
     let targets = parse_macro_input!(input as MacroAbigenTargets);
 
-    Abigen::generate(targets.into(), false).unwrap().into()
+    Abigen::generate(targets.into(), false)
+        .expect("abigen generation failed")
+        .into()
 }
 
 #[proc_macro]
 pub fn wasm_abigen(input: TokenStream) -> TokenStream {
     let targets = parse_macro_input!(input as MacroAbigenTargets);
 
-    Abigen::generate(targets.into(), true).unwrap().into()
+    Abigen::generate(targets.into(), true)
+        .expect("abigen generation failed")
+        .into()
 }
 
 /// Used to reduce boilerplate in integration tests.
@@ -58,7 +62,7 @@ pub fn setup_program_test(input: TokenStream) -> TokenStream {
         .into()
 }
 
-#[proc_macro_derive(Parameterize, attributes(FuelsTypesPath, FuelsCorePath, NoStd))]
+#[proc_macro_derive(Parameterize, attributes(FuelsTypesPath, FuelsCorePath, NoStd, Ignore))]
 pub fn parameterize(stream: TokenStream) -> TokenStream {
     let input = parse_macro_input!(stream as DeriveInput);
 
@@ -67,7 +71,7 @@ pub fn parameterize(stream: TokenStream) -> TokenStream {
         .into()
 }
 
-#[proc_macro_derive(Tokenizable, attributes(FuelsTypesPath, FuelsCorePath, NoStd))]
+#[proc_macro_derive(Tokenizable, attributes(FuelsTypesPath, FuelsCorePath, NoStd, Ignore))]
 pub fn tokenizable(stream: TokenStream) -> TokenStream {
     let input = parse_macro_input!(stream as DeriveInput);
 

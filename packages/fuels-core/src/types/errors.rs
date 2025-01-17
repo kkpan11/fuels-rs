@@ -1,66 +1,93 @@
-use std::{array::TryFromSliceError, str::Utf8Error};
+pub mod transaction {
+    #[derive(thiserror::Error, Debug, Clone)]
+    pub enum Reason {
+        #[error("builder: {0}")]
+        Builder(String),
+        #[error("validation: {0}")]
+        Validation(String),
+        #[error("squeezedOut: {0}")]
+        SqueezedOut(String),
+        #[error("reverted: {reason}, receipts: {receipts:?}")]
+        Reverted {
+            reason: String,
+            revert_id: u64,
+            receipts: Vec<fuel_tx::Receipt>,
+        },
+        #[error(": {0}")]
+        Other(String),
+    }
+}
 
-use fuel_tx::{CheckError, Receipt};
-use thiserror::Error;
-
-#[derive(Error, Debug)]
+#[derive(thiserror::Error, Debug, Clone)]
 pub enum Error {
-    #[error("Invalid data: {0}")]
-    InvalidData(String),
-    #[error("Serialization error: {0}")]
-    SerdeJson(#[from] serde_json::Error),
-    #[error("IO error: {0}")]
-    IOError(#[from] std::io::Error),
-    #[error("Invalid type: {0}")]
-    InvalidType(String),
-    #[error("Utf8 error: {0}")]
-    Utf8Error(#[from] Utf8Error),
-    #[error("Instantiation error: {0}")]
-    InstantiationError(String),
-    #[error("Infrastructure error: {0}")]
-    InfrastructureError(String),
-    #[error("Account error: {0}")]
-    AccountError(String),
-    #[error("Wallet error: {0}")]
-    WalletError(String),
-    #[error("Provider error: {0}")]
-    ProviderError(String),
-    #[error("Validation error: {0}")]
-    ValidationError(#[from] CheckError),
-    #[error("Tried to forward assets to a contract method that is not payable.")]
-    AssetsForwardedToNonPayableMethod,
-    #[error("Revert transaction error: {reason},\n receipts: {receipts:?}")]
-    RevertTransactionError {
-        reason: String,
-        revert_id: u64,
-        receipts: Vec<Receipt>,
-    },
-    #[error("Transaction build error: {0}")]
-    TransactionBuildError(String),
+    #[error("io: {0}")]
+    IO(String),
+    #[error("codec: {0}")]
+    Codec(String),
+    #[error("transaction {0}")]
+    Transaction(transaction::Reason),
+    #[error("provider: {0}")]
+    Provider(String),
+    #[error("{0}")]
+    Other(String),
+}
+
+impl From<std::io::Error> for Error {
+    fn from(value: std::io::Error) -> Self {
+        Self::IO(value.to_string())
+    }
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
 
 /// This macro can only be used for `Error` variants that have a `String` field.
-/// Those are: `InvalidData`, `InvalidType`, `InfrastructureError`,
-/// `InstantiationError`, `WalletError`, `ProviderError`, `TransactionBuildError`
+/// Those are: `IO`, `Codec`, `Provider`, `Other`.
 #[macro_export]
 macro_rules! error {
    ($err_variant:ident, $fmt_str: literal $(,$arg: expr)*) => {
-       Error::$err_variant(format!($fmt_str,$($arg),*))
+    $crate::types::errors::Error::$err_variant(format!($fmt_str,$($arg),*))
    }
 }
 pub use error;
 
+/// This macro can only be used for `Error::Transaction` variants that have a `String` field.
+/// Those are: `Builder`, `Validation`, `SqueezedOut`, `Other`.
+#[macro_export]
+macro_rules! error_transaction {
+   ($err_variant:ident, $fmt_str: literal $(,$arg: expr)*) => {
+    $crate::types::errors::Error::Transaction(
+        $crate::types::errors::transaction::Reason::$err_variant(format!($fmt_str,$($arg),*)))
+   }
+}
+pub use error_transaction;
+
+impl From<fuel_vm::checked_transaction::CheckError> for Error {
+    fn from(err: fuel_vm::checked_transaction::CheckError) -> Error {
+        error_transaction!(Validation, "{err:?}")
+    }
+}
+
+impl From<fuel_tx::ValidityError> for Error {
+    fn from(err: fuel_tx::ValidityError) -> Error {
+        error_transaction!(Validation, "{err:?}")
+    }
+}
+
 macro_rules! impl_error_from {
     ($err_variant:ident, $err_type:ty ) => {
-        impl From<$err_type> for Error {
-            fn from(err: $err_type) -> Error {
-                Error::$err_variant(err.to_string())
+        impl From<$err_type> for $crate::types::errors::Error {
+            fn from(err: $err_type) -> $crate::types::errors::Error {
+                $crate::types::errors::Error::$err_variant(err.to_string())
             }
         }
     };
 }
 
-impl_error_from!(InvalidData, bech32::Error);
-impl_error_from!(InvalidData, TryFromSliceError);
+impl_error_from!(Other, &'static str);
+impl_error_from!(Other, bech32::Error);
+impl_error_from!(Other, fuel_crypto::Error);
+impl_error_from!(Other, serde_json::Error);
+impl_error_from!(Other, hex::FromHexError);
+impl_error_from!(Other, std::array::TryFromSliceError);
+impl_error_from!(Other, std::str::Utf8Error);
+impl_error_from!(Other, fuel_abi_types::error::Error);

@@ -1,4 +1,4 @@
-use fuel_abi_types::abi::full_program::FullProgramABI;
+use fuel_abi_types::abi::full_program::{FullABIFunction, FullProgramABI};
 use proc_macro2::{Ident, TokenStream};
 use quote::quote;
 
@@ -19,11 +19,8 @@ pub(crate) fn predicate_bindings(
     abi: FullProgramABI,
     no_std: bool,
 ) -> Result<GeneratedCode> {
-    if no_std {
-        return Ok(GeneratedCode::default());
-    }
-
-    let encode_function = expand_fn(&abi)?;
+    let main_function_abi = extract_main_fn(&abi.functions)?;
+    let encode_function = expand_fn(main_function_abi)?;
     let encoder_struct_name = ident(&format!("{name}Encoder"));
 
     let configuration_struct_name = ident(&format!("{name}Configurables"));
@@ -31,10 +28,19 @@ pub(crate) fn predicate_bindings(
         generate_code_for_configurable_constants(&configuration_struct_name, &abi.configurables)?;
 
     let code = quote! {
-        pub struct #encoder_struct_name;
+        #[derive(Default)]
+        pub struct #encoder_struct_name{
+            encoder: ::fuels::core::codec::ABIEncoder,
+        }
 
         impl #encoder_struct_name {
            #encode_function
+
+            pub fn new(encoder_config: ::fuels::core::codec::EncoderConfig) -> Self {
+                Self {
+                    encoder: ::fuels::core::codec::ABIEncoder::new(encoder_config)
+                }
+            }
         }
 
         #constant_configuration_code
@@ -48,22 +54,22 @@ pub(crate) fn predicate_bindings(
     Ok(GeneratedCode::new(code, type_paths, no_std))
 }
 
-fn expand_fn(abi: &FullProgramABI) -> Result<TokenStream> {
-    let fun = extract_main_fn(&abi.functions)?;
-    let mut generator = FunctionGenerator::new(fun)?;
+fn expand_fn(fn_abi: &FullABIFunction) -> Result<TokenStream> {
+    let mut generator = FunctionGenerator::new(fn_abi)?;
 
     let arg_tokens = generator.tokenized_args();
-
     let body = quote! {
-        ::fuels::core::codec::ABIEncoder::encode(&#arg_tokens).expect("Cannot encode predicate data")
+        self.encoder.encode(&#arg_tokens)
+    };
+    let output_type = quote! {
+        ::fuels::types::errors::Result<::std::vec::Vec<u8>>
     };
 
     generator
-        .set_doc("Run the predicate's encode function with the provided arguments".to_string())
+        .set_docs(vec!["Encode the predicate arguments".to_string()])
         .set_name("encode_data".to_string())
-        .set_output_type(quote! { ::fuels::types::unresolved_bytes::UnresolvedBytes})
-        .make_fn_associated()
+        .set_output_type(output_type)
         .set_body(body);
 
-    Ok(generator.into())
+    Ok(generator.generate())
 }

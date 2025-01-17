@@ -1,5 +1,7 @@
 use std::fmt::{Debug, Display, Formatter};
 
+use serde::{Deserialize, Serialize};
+
 use crate::types::errors::{error, Error, Result};
 
 // To be used when interacting with contracts which have string slices in their ABI.
@@ -12,8 +14,8 @@ pub struct AsciiString {
 impl AsciiString {
     pub fn new(data: String) -> Result<Self> {
         if !data.is_ascii() {
-            return Err(error!(InvalidData,
-                "AsciiString must be constructed from a string containing only ascii encodable characters. Got: {data}"
+            return Err(error!(Other,
+                "`AsciiString` must be constructed from a string containing only ascii encodable characters. Got: `{data}`"
             ));
         }
         Ok(Self { data })
@@ -52,6 +54,12 @@ impl From<AsciiString> for String {
     }
 }
 
+impl<const LEN: usize> AsRef<str> for SizedAsciiString<LEN> {
+    fn as_ref(&self) -> &str {
+        &self.data
+    }
+}
+
 impl Display for AsciiString {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.data)
@@ -72,7 +80,7 @@ impl PartialEq<AsciiString> for &str {
 // To be used when interacting with contracts which have strings in their ABI.
 // The length of a string is part of its type -- i.e. str[2] is a
 // different type from str[3]. The FuelVM strings only support ascii characters.
-#[derive(Debug, PartialEq, Clone, Eq)]
+#[derive(Debug, PartialEq, Clone, Eq, Hash, Default)]
 pub struct SizedAsciiString<const LEN: usize> {
     data: String,
 }
@@ -80,13 +88,13 @@ pub struct SizedAsciiString<const LEN: usize> {
 impl<const LEN: usize> SizedAsciiString<LEN> {
     pub fn new(data: String) -> Result<Self> {
         if !data.is_ascii() {
-            return Err(error!(InvalidData,
-                "SizedAsciiString must be constructed from a string containing only ascii encodable characters. Got: {data}"
+            return Err(error!(Other,
+                "`SizedAsciiString` must be constructed from a `String` containing only ascii encodable characters. Got: `{data}`"
             ));
         }
         if data.len() != LEN {
-            return Err(error!(InvalidData,
-                "SizedAsciiString<{LEN}> can only be constructed from a String of length {LEN}. Got: {data}"
+            return Err(error!(Other,
+                "`SizedAsciiString<{LEN}>` must be constructed from a `String` of length {LEN}. Got: `{data}`"
             ));
         }
         Ok(Self { data })
@@ -106,8 +114,8 @@ impl<const LEN: usize> SizedAsciiString<LEN> {
     pub fn new_with_right_whitespace_padding(data: String) -> Result<Self> {
         if data.len() > LEN {
             return Err(error!(
-                InvalidData,
-                "SizedAsciiString<{LEN}> cannot be constructed from a string of size {}",
+                Other,
+                "`SizedAsciiString<{LEN}>` cannot be constructed from a string of size {}",
                 data.len()
             ));
         }
@@ -151,9 +159,28 @@ impl<const LEN: usize> PartialEq<&str> for SizedAsciiString<LEN> {
         self.data == *other
     }
 }
+
 impl<const LEN: usize> PartialEq<SizedAsciiString<LEN>> for &str {
     fn eq(&self, other: &SizedAsciiString<LEN>) -> bool {
         *self == other.data
+    }
+}
+
+impl<const LEN: usize> Serialize for SizedAsciiString<LEN> {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> core::result::Result<S::Ok, S::Error> {
+        self.data.serialize(serializer)
+    }
+}
+
+impl<'de, const LEN: usize> Deserialize<'de> for SizedAsciiString<LEN> {
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> core::result::Result<Self, D::Error> {
+        let data = String::deserialize(deserializer)?;
+        Self::new(data).map_err(serde::de::Error::custom)
     }
 }
 
@@ -167,7 +194,7 @@ mod tests {
         let ascii_data = "abc".to_string();
 
         SizedAsciiString::<3>::new(ascii_data)
-            .expect("Should have succeeded since we gave ascii data of correct length!");
+            .expect("should have succeeded since we gave ascii data of correct length!");
         // ANCHOR_END: string_simple_example
     }
 
@@ -176,10 +203,10 @@ mod tests {
         let ascii_data = "ab©".to_string();
 
         let err = SizedAsciiString::<3>::new(ascii_data)
-            .expect_err("Should not have succeeded since we gave non ascii data");
+            .expect_err("should not have succeeded since we gave non ascii data");
 
-        let expected_reason = "SizedAsciiString must be constructed from a string containing only ascii encodable characters. Got: ";
-        assert!(matches!(err, Error::InvalidData(reason) if reason.starts_with(expected_reason)));
+        let expected_reason = "`SizedAsciiString` must be constructed from a `String` containing only ascii encodable characters. Got: ";
+        assert!(matches!(err, Error::Other(reason) if reason.starts_with(expected_reason)));
     }
 
     #[test]
@@ -187,22 +214,22 @@ mod tests {
         let ascii_data = "abcd".to_string();
 
         let err = SizedAsciiString::<3>::new(ascii_data)
-            .expect_err("Should not have succeeded since we gave data of wrong length");
+            .expect_err("should not have succeeded since we gave data of wrong length");
 
         let expected_reason =
-            "SizedAsciiString<3> can only be constructed from a String of length 3. Got: abcd";
-        assert!(matches!(err, Error::InvalidData(reason) if reason.starts_with(expected_reason)));
+            "`SizedAsciiString<3>` must be constructed from a `String` of length 3. Got: `abcd`";
+        assert!(matches!(err, Error::Other(reason) if reason.starts_with(expected_reason)));
     }
 
     // ANCHOR: conversion
     #[test]
     fn can_be_constructed_from_str_ref() {
-        let _: SizedAsciiString<3> = "abc".try_into().expect("Should have succeeded");
+        let _: SizedAsciiString<3> = "abc".try_into().expect("should have succeeded");
     }
 
     #[test]
     fn can_be_constructed_from_string() {
-        let _: SizedAsciiString<3> = "abc".to_string().try_into().expect("Should have succeeded");
+        let _: SizedAsciiString<3> = "abc".to_string().try_into().expect("should have succeeded");
     }
 
     #[test]
@@ -244,5 +271,32 @@ mod tests {
         assert_eq!("victor      ", padded);
 
         Ok(())
+    }
+
+    #[test]
+    fn test_can_serialize_sized_ascii() {
+        let sized_str = SizedAsciiString::<3>::new("abc".to_string()).unwrap();
+
+        let serialized = serde_json::to_string(&sized_str).unwrap();
+        assert_eq!(serialized, "\"abc\"");
+    }
+
+    #[test]
+    fn test_can_deserialize_sized_ascii() {
+        let serialized = "\"abc\"";
+
+        let deserialized: SizedAsciiString<3> = serde_json::from_str(serialized).unwrap();
+        assert_eq!(
+            deserialized,
+            SizedAsciiString::<3>::new("abc".to_string()).unwrap()
+        );
+    }
+
+    #[test]
+    fn test_can_convert_sized_ascii_to_bytes() {
+        let sized_str = SizedAsciiString::<3>::new("abc".to_string()).unwrap();
+
+        let bytes: &[u8] = sized_str.as_ref().as_bytes();
+        assert_eq!(bytes, &[97, 98, 99]);
     }
 }

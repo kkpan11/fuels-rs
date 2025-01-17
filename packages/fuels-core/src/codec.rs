@@ -1,21 +1,29 @@
 mod abi_decoder;
 mod abi_encoder;
+mod abi_formatter;
 mod function_selector;
+mod logs;
+mod utils;
+
+use std::io::Read;
 
 pub use abi_decoder::*;
 pub use abi_encoder::*;
+pub use abi_formatter::*;
 pub use function_selector::*;
+pub use logs::*;
 
 use crate::{
     traits::{Parameterize, Tokenizable},
     types::errors::Result,
 };
 
-pub fn try_from_bytes<T>(bytes: &[u8]) -> Result<T>
+/// Decodes `bytes` into type `T` following the schema defined by T's `Parameterize` impl
+pub fn try_from_bytes<T>(bytes: impl Read, decoder_config: DecoderConfig) -> Result<T>
 where
     T: Parameterize + Tokenizable,
 {
-    let token = ABIDecoder::decode_single(&T::param_type(), bytes)?;
+    let token = ABIDecoder::new(decoder_config).decode(&T::param_type(), bytes)?;
 
     T::from_token(token)
 }
@@ -25,14 +33,38 @@ mod tests {
     use super::*;
     use crate::{
         constants::WORD_SIZE,
-        types::{Address, AssetId, ContractId},
+        types::{Address, AsciiString, AssetId, ContractId},
     };
 
     #[test]
-    fn can_convert_bytes_into_tuple() -> Result<()> {
-        let tuple_in_bytes: Vec<u8> = vec![0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 2];
+    fn convert_all_from_bool_to_u64() -> Result<()> {
+        let bytes = [255; WORD_SIZE];
 
-        let the_tuple: (u64, u32) = try_from_bytes(&tuple_in_bytes)?;
+        macro_rules! test_decode {
+            ($($for_type: ident),*) => {
+                $(assert_eq!(
+                        try_from_bytes::<$for_type>(bytes.as_slice(), DecoderConfig::default())?,
+                        $for_type::MAX
+                );)*
+            };
+        }
+
+        assert!(try_from_bytes::<bool>(
+            bytes.as_slice(),
+            DecoderConfig::default()
+        )?);
+
+        test_decode!(u8, u16, u32, u64);
+
+        Ok(())
+    }
+
+    #[test]
+    fn convert_bytes_into_tuple() -> Result<()> {
+        let tuple_in_bytes = [0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 2];
+
+        let the_tuple: (u64, u32) =
+            try_from_bytes(tuple_in_bytes.as_slice(), DecoderConfig::default())?;
 
         assert_eq!(the_tuple, (1, 2));
 
@@ -40,34 +72,52 @@ mod tests {
     }
 
     #[test]
-    fn can_convert_all_from_bool_to_u64() -> Result<()> {
-        let bytes: Vec<u8> = vec![0xFF; WORD_SIZE];
+    fn convert_native_types() -> Result<()> {
+        let bytes = [255; 32];
 
-        assert!(try_from_bytes::<bool>(&bytes)?);
-        assert_eq!(try_from_bytes::<u8>(&bytes)?, u8::MAX);
-        assert_eq!(try_from_bytes::<u16>(&bytes)?, u16::MAX);
-        assert_eq!(try_from_bytes::<u32>(&bytes)?, u32::MAX);
-        assert_eq!(try_from_bytes::<u64>(&bytes)?, u64::MAX);
+        macro_rules! test_decode {
+            ($($for_type: ident),*) => {
+                $(assert_eq!(
+                        try_from_bytes::<$for_type>(bytes.as_slice(), DecoderConfig::default())?,
+                        $for_type::new(bytes.as_slice().try_into()?)
+                );)*
+            };
+        }
+
+        test_decode!(Address, ContractId, AssetId);
 
         Ok(())
     }
 
     #[test]
-    fn can_convert_native_types() -> Result<()> {
-        let bytes = [0xFF; 32];
+    fn string_slice_is_read_in_total() {
+        // This was a bug where the decoder read more bytes than it reported, causing the next
+        // element to be read incorrectly.
 
-        assert_eq!(
-            try_from_bytes::<Address>(&bytes)?,
-            Address::new(bytes.as_slice().try_into()?)
-        );
-        assert_eq!(
-            try_from_bytes::<ContractId>(&bytes)?,
-            ContractId::new(bytes.as_slice().try_into()?)
-        );
-        assert_eq!(
-            try_from_bytes::<AssetId>(&bytes)?,
-            AssetId::new(bytes.as_slice().try_into()?)
-        );
-        Ok(())
+        // given
+        #[derive(
+            fuels_macros::Tokenizable, fuels_macros::Parameterize, Clone, PartialEq, Debug,
+        )]
+        #[FuelsCorePath = "crate"]
+        #[FuelsTypesPath = "crate::types"]
+        struct Test {
+            name: AsciiString,
+            age: u64,
+        }
+
+        let input = Test {
+            name: AsciiString::new("Alice".to_owned()).unwrap(),
+            age: 42,
+        };
+
+        let encoded = ABIEncoder::default()
+            .encode(&[input.clone().into_token()])
+            .unwrap();
+
+        // when
+        let decoded = try_from_bytes::<Test>(encoded.as_slice(), DecoderConfig::default()).unwrap();
+
+        // then
+        assert_eq!(decoded, input);
     }
 }

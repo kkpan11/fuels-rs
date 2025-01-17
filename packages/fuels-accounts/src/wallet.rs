@@ -2,57 +2,24 @@ use std::{fmt, ops, path::Path};
 
 use async_trait::async_trait;
 use elliptic_curve::rand_core;
-use eth_keystore::KeystoreError;
 use fuel_crypto::{Message, PublicKey, SecretKey, Signature};
-use fuel_tx::{AssetId, Witness};
 use fuels_core::{
-    constants::BASE_ASSET_ID,
+    traits::Signer,
     types::{
         bech32::{Bech32Address, FUEL_BECH32_HRP},
-        errors::{Error, Result},
+        coin_type_id::CoinTypeId,
+        errors::{error, Result},
         input::Input,
-        transaction::Transaction,
         transaction_builders::TransactionBuilder,
+        AssetId,
     },
 };
 use rand::{CryptoRng, Rng};
-use thiserror::Error;
+use zeroize::{Zeroize, ZeroizeOnDrop};
 
-use crate::{
-    accounts_utils::{adjust_inputs, adjust_outputs, calculate_base_amount_with_fee},
-    provider::{Provider, ProviderError},
-    Account, AccountError, AccountResult, Signer, ViewOnlyAccount,
-};
+use crate::{accounts_utils::try_provider_error, provider::Provider, Account, ViewOnlyAccount};
 
 pub const DEFAULT_DERIVATION_PATH_PREFIX: &str = "m/44'/1179993420'";
-
-#[derive(Error, Debug)]
-/// Error thrown by the Wallet module
-pub enum WalletError {
-    /// Error propagated from the hex crate.
-    #[error(transparent)]
-    Hex(#[from] hex::FromHexError),
-    /// Error propagated by parsing of a slice
-    #[error("Failed to parse slice")]
-    Parsing(#[from] std::array::TryFromSliceError),
-    /// Keystore error
-    #[error(transparent)]
-    KeystoreError(#[from] KeystoreError),
-    #[error(transparent)]
-    FuelCrypto(#[from] fuel_crypto::Error),
-    #[error(transparent)]
-    ProviderError(#[from] ProviderError),
-    #[error("Called `try_provider` method on wallet where no provider was set up")]
-    NoProviderError,
-}
-
-impl From<WalletError> for Error {
-    fn from(e: WalletError) -> Self {
-        Error::WalletError(e.to_string())
-    }
-}
-
-type WalletResult<T> = std::result::Result<T, WalletError>;
 
 /// A FuelVM-compatible wallet that can be used to list assets, balances and more.
 ///
@@ -72,8 +39,11 @@ pub struct Wallet {
 /// A `WalletUnlocked` is equivalent to a [`Wallet`] whose private key is known and stored
 /// alongside in-memory. Knowing the private key allows a `WalletUlocked` to sign operations, send
 /// transactions, and more.
-#[derive(Clone, Debug)]
+///
+/// `private_key` will be zeroed out on calling `lock()` or `drop`ping a `WalletUnlocked`.
+#[derive(Clone, Debug, Zeroize, ZeroizeOnDrop)]
 pub struct WalletUnlocked {
+    #[zeroize(skip)]
     wallet: Wallet,
     pub(crate) private_key: SecretKey,
 }
@@ -88,9 +58,8 @@ impl Wallet {
         self.provider.as_ref()
     }
 
-    pub fn set_provider(&mut self, provider: Provider) -> &mut Self {
+    pub fn set_provider(&mut self, provider: Provider) {
         self.provider = Some(provider);
-        self
     }
 
     pub fn address(&self) -> &Bech32Address {
@@ -109,28 +78,44 @@ impl Wallet {
     }
 }
 
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 impl ViewOnlyAccount for Wallet {
     fn address(&self) -> &Bech32Address {
         self.address()
     }
 
-    fn try_provider(&self) -> AccountResult<&Provider> {
-        self.provider.as_ref().ok_or(AccountError::no_provider())
+    fn try_provider(&self) -> Result<&Provider> {
+        self.provider.as_ref().ok_or_else(try_provider_error)
+    }
+
+    async fn get_asset_inputs_for_amount(
+        &self,
+        asset_id: AssetId,
+        amount: u64,
+        excluded_coins: Option<Vec<CoinTypeId>>,
+    ) -> Result<Vec<Input>> {
+        Ok(self
+            .get_spendable_resources(asset_id, amount, excluded_coins)
+            .await?
+            .into_iter()
+            .map(Input::resource_signed)
+            .collect::<Vec<Input>>())
     }
 }
 
 impl WalletUnlocked {
-    /// Lock the wallet by `drop`ping the private key from memory.
-    pub fn lock(self) -> Wallet {
-        self.wallet
+    /// Lock the wallet by securely `zeroize`-ing and `drop`ping the private key from memory.
+    pub fn lock(mut self) -> Wallet {
+        self.private_key.zeroize();
+        self.wallet.clone()
     }
 
     // NOTE: Rather than providing a `DerefMut` implementation, we wrap the `set_provider` method
     // directly. This is because we should not allow the user a `&mut` handle to the inner `Wallet`
     // as this could lead to ending up with a `WalletUnlocked` in an inconsistent state (e.g. the
     // private key doesn't match the inner wallet's public key).
-    pub fn set_provider(&mut self, provider: Provider) -> &mut Wallet {
-        self.wallet.set_provider(provider)
+    pub fn set_provider(&mut self, provider: Provider) {
+        self.wallet.set_provider(provider);
     }
 
     /// Creates a new wallet with a random private key.
@@ -150,21 +135,18 @@ impl WalletUnlocked {
 
     /// Creates a new wallet from a mnemonic phrase.
     /// The default derivation path is used.
-    pub fn new_from_mnemonic_phrase(
-        phrase: &str,
-        provider: Option<Provider>,
-    ) -> WalletResult<Self> {
+    pub fn new_from_mnemonic_phrase(phrase: &str, provider: Option<Provider>) -> Result<Self> {
         let path = format!("{DEFAULT_DERIVATION_PATH_PREFIX}/0'/0/0");
         Self::new_from_mnemonic_phrase_with_path(phrase, provider, &path)
     }
 
     /// Creates a new wallet from a mnemonic phrase.
-    /// It takes a path to a BIP32 derivation path.
+    /// It takes a derivation path such as BIP32 or BIP44.
     pub fn new_from_mnemonic_phrase_with_path(
         phrase: &str,
         provider: Option<Provider>,
         path: &str,
-    ) -> WalletResult<Self> {
+    ) -> Result<Self> {
         let secret_key = SecretKey::new_from_mnemonic_phrase_with_path(phrase, path)?;
 
         Ok(Self::new_from_private_key(secret_key, provider))
@@ -176,16 +158,16 @@ impl WalletUnlocked {
         rng: &mut R,
         password: S,
         provider: Option<Provider>,
-    ) -> WalletResult<(Self, String)>
+    ) -> Result<(Self, String)>
     where
         P: AsRef<Path>,
         R: Rng + CryptoRng + rand_core::CryptoRng,
         S: AsRef<[u8]>,
     {
-        let (secret, uuid) = eth_keystore::new(dir, rng, password, None)?;
+        let (secret, uuid) =
+            eth_keystore::new(dir, rng, password, None).map_err(|e| error!(Other, "{e}"))?;
 
-        let secret_key =
-            SecretKey::try_from(secret.as_slice()).expect("A new secret should be correct size");
+        let secret_key = SecretKey::try_from(secret.as_slice()).expect("should have correct size");
 
         let wallet = Self::new_from_private_key(secret_key, provider);
 
@@ -194,131 +176,82 @@ impl WalletUnlocked {
 
     /// Encrypts the wallet's private key with the given password and saves it
     /// to the given path.
-    pub fn encrypt<P, S>(&self, dir: P, password: S) -> WalletResult<String>
+    pub fn encrypt<P, S>(&self, dir: P, password: S) -> Result<String>
     where
         P: AsRef<Path>,
         S: AsRef<[u8]>,
     {
         let mut rng = rand::thread_rng();
 
-        Ok(eth_keystore::encrypt_key(
-            dir,
-            &mut rng,
-            *self.private_key,
-            password,
-            None,
-        )?)
+        eth_keystore::encrypt_key(dir, &mut rng, *self.private_key, password, None)
+            .map_err(|e| error!(Other, "{e}"))
     }
 
     /// Recreates a wallet from an encrypted JSON wallet given the provided path and password.
-    pub fn load_keystore<P, S>(
-        keypath: P,
-        password: S,
-        provider: Option<Provider>,
-    ) -> WalletResult<Self>
+    pub fn load_keystore<P, S>(keypath: P, password: S, provider: Option<Provider>) -> Result<Self>
     where
         P: AsRef<Path>,
         S: AsRef<[u8]>,
     {
-        let secret = eth_keystore::decrypt_key(keypath, password)?;
+        let secret =
+            eth_keystore::decrypt_key(keypath, password).map_err(|e| error!(Other, "{e}"))?;
         let secret_key = SecretKey::try_from(secret.as_slice())
             .expect("Decrypted key should have a correct size");
         Ok(Self::new_from_private_key(secret_key, provider))
     }
+
+    pub fn address(&self) -> &Bech32Address {
+        &self.address
+    }
+
+    /// Returns the private key of the wallet. This method is only available when the 'test-helpers' feature is enabled.
+    #[cfg(feature = "test-helpers")]
+    pub fn secret_key(&self) -> &SecretKey {
+        &self.private_key
+    }
 }
 
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 impl ViewOnlyAccount for WalletUnlocked {
     fn address(&self) -> &Bech32Address {
         self.wallet.address()
     }
 
-    fn try_provider(&self) -> AccountResult<&Provider> {
-        self.provider.as_ref().ok_or(AccountError::no_provider())
+    fn try_provider(&self) -> Result<&Provider> {
+        self.provider.as_ref().ok_or_else(try_provider_error)
     }
-}
 
-#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
-impl Account for WalletUnlocked {
-    /// Returns a vector consisting of `Input::Coin`s and `Input::Message`s for the given
-    /// asset ID and amount. The `witness_index` is the position of the witness (signature)
-    /// in the transaction's list of witnesses. In the validation process, the node will
-    /// use the witness at this index to validate the coins returned by this method.
     async fn get_asset_inputs_for_amount(
         &self,
         asset_id: AssetId,
         amount: u64,
-        witness_index: Option<u8>,
+        excluded_coins: Option<Vec<CoinTypeId>>,
     ) -> Result<Vec<Input>> {
-        Ok(self
-            .get_spendable_resources(asset_id, amount)
-            .await?
-            .into_iter()
-            .map(|resource| Input::resource_signed(resource, witness_index.unwrap_or_default()))
-            .collect::<Vec<Input>>())
+        self.wallet
+            .get_asset_inputs_for_amount(asset_id, amount, excluded_coins)
+            .await
     }
+}
 
-    async fn add_fee_resources<Tb: TransactionBuilder>(
-        &self,
-        mut tb: Tb,
-        previous_base_amount: u64,
-        witness_index: Option<u8>,
-    ) -> Result<Tb::TxType> {
-        let consensus_parameters = self.try_provider()?.consensus_parameters();
-        tb = tb.set_consensus_parameters(consensus_parameters);
+impl Account for WalletUnlocked {
+    fn add_witnesses<Tb: TransactionBuilder>(&self, tb: &mut Tb) -> Result<()> {
+        tb.add_signer(self.clone())?;
 
-        let new_base_amount =
-            calculate_base_amount_with_fee(&tb, &consensus_parameters, previous_base_amount);
-
-        let new_base_inputs = self
-            .get_asset_inputs_for_amount(BASE_ASSET_ID, new_base_amount, witness_index)
-            .await?;
-
-        adjust_inputs(&mut tb, new_base_inputs);
-        adjust_outputs(&mut tb, self.address(), new_base_amount);
-
-        let mut tx = tb.build()?;
-
-        self.sign_transaction(&mut tx)?;
-
-        Ok(tx)
+        Ok(())
     }
 }
 
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 impl Signer for WalletUnlocked {
-    type Error = WalletError;
-    async fn sign_message<S: Send + Sync + AsRef<[u8]>>(
-        &self,
-        message: S,
-    ) -> WalletResult<Signature> {
-        let message = Message::new(message);
+    async fn sign(&self, message: Message) -> Result<Signature> {
         let sig = Signature::sign(&self.private_key, &message);
+
         Ok(sig)
     }
 
-    fn sign_transaction(&self, tx: &mut impl Transaction) -> WalletResult<Signature> {
-        let consensus_parameters = self
-            .try_provider()
-            .map_err(|_| WalletError::NoProviderError)?
-            .consensus_parameters();
-        let id = tx.id(consensus_parameters.chain_id.into());
-
-        let message = Message::from_bytes(*id);
-        let sig = Signature::sign(&self.private_key, &message);
-
-        let witness = vec![Witness::from(sig.as_ref())];
-
-        let witnesses: &mut Vec<Witness> = tx.witnesses_mut();
-
-        match witnesses.len() {
-            0 => *witnesses = witness,
-            _ => {
-                witnesses.extend(witness);
-            }
-        }
-
-        Ok(sig)
+    fn address(&self) -> &Bech32Address {
+        &self.address
     }
 }
 
@@ -339,7 +272,7 @@ impl ops::Deref for WalletUnlocked {
 
 /// Generates a random mnemonic phrase given a random number generator and the number of words to
 /// generate, `count`.
-pub fn generate_mnemonic_phrase<R: Rng>(rng: &mut R, count: usize) -> WalletResult<String> {
+pub fn generate_mnemonic_phrase<R: Rng>(rng: &mut R, count: usize) -> Result<String> {
     Ok(fuel_crypto::generate_mnemonic_phrase(rng, count)?)
 }
 
@@ -358,15 +291,15 @@ mod tests {
         let (wallet, uuid) = WalletUnlocked::new_from_keystore(&dir, &mut rng, "password", None)?;
 
         // sign a message using the above key.
-        let message = "Hello there!";
-        let signature = wallet.sign_message(message).await?;
+        let message = Message::new("Hello there!".as_bytes());
+        let signature = wallet.sign(message).await?;
 
         // Read from the encrypted JSON keystore and decrypt it.
         let path = Path::new(dir.path()).join(uuid);
         let recovered_wallet = WalletUnlocked::load_keystore(path.clone(), "password", None)?;
 
         // Sign the same message as before and assert that the signature is the same.
-        let signature2 = recovered_wallet.sign_message(message).await?;
+        let signature2 = recovered_wallet.sign(message).await?;
         assert_eq!(signature, signature2);
 
         // Remove tempdir.
@@ -377,8 +310,8 @@ mod tests {
     #[tokio::test]
     async fn mnemonic_generation() -> Result<()> {
         let mnemonic = generate_mnemonic_phrase(&mut rand::thread_rng(), 12)?;
-
         let _wallet = WalletUnlocked::new_from_mnemonic_phrase(&mnemonic, None)?;
+
         Ok(())
     }
 

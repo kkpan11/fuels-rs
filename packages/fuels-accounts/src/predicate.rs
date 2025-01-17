@@ -1,27 +1,24 @@
 use std::{fmt::Debug, fs};
 
-use fuel_tx::ConsensusParameters;
-use fuel_types::AssetId;
+#[cfg(feature = "std")]
+use fuels_core::types::{coin_type_id::CoinTypeId, input::Input, AssetId};
 use fuels_core::{
-    constants::BASE_ASSET_ID,
-    types::{
-        bech32::Bech32Address, errors::Result, input::Input,
-        transaction_builders::TransactionBuilder, unresolved_bytes::UnresolvedBytes,
-    },
+    error,
+    types::{bech32::Bech32Address, errors::Result},
     Configurables,
 };
 
-use crate::{
-    accounts_utils::{adjust_inputs, adjust_outputs, calculate_base_amount_with_fee},
-    provider::Provider,
-    Account, AccountError, AccountResult, ViewOnlyAccount,
-};
+#[cfg(feature = "std")]
+use crate::accounts_utils::try_provider_error;
+#[cfg(feature = "std")]
+use crate::{provider::Provider, Account, ViewOnlyAccount};
 
 #[derive(Debug, Clone)]
 pub struct Predicate {
     address: Bech32Address,
     code: Vec<u8>,
-    data: UnresolvedBytes,
+    data: Vec<u8>,
+    #[cfg(feature = "std")]
     provider: Option<Provider>,
 }
 
@@ -30,71 +27,48 @@ impl Predicate {
         &self.address
     }
 
-    pub fn code(&self) -> &Vec<u8> {
+    pub fn code(&self) -> &[u8] {
         &self.code
     }
 
-    pub fn data(&self) -> &UnresolvedBytes {
+    pub fn data(&self) -> &[u8] {
         &self.data
     }
 
-    pub fn provider(&self) -> Option<&Provider> {
-        self.provider.as_ref()
+    pub fn calculate_address(code: &[u8]) -> Bech32Address {
+        fuel_tx::Input::predicate_owner(code).into()
     }
 
-    pub fn set_provider(&mut self, provider: Provider) -> &mut Self {
-        self.address =
-            Self::calculate_address(&self.code, provider.consensus_parameters().chain_id.into());
-        self.provider = Some(provider);
-        self
+    pub fn load_from(file_path: &str) -> Result<Self> {
+        let code = fs::read(file_path).map_err(|e| {
+            error!(
+                IO,
+                "could not read predicate binary {file_path:?}. Reason: {e}"
+            )
+        })?;
+        Ok(Self::from_code(code))
     }
 
-    pub fn calculate_address(code: &[u8], chain_id: u64) -> Bech32Address {
-        fuel_tx::Input::predicate_owner(code, &chain_id.into()).into()
-    }
-
-    fn consensus_parameters(&self) -> ConsensusParameters {
-        self.provider()
-            .map(|p| p.consensus_parameters())
-            .unwrap_or_default()
-    }
-
-    /// Uses default `ConsensusParameters`
     pub fn from_code(code: Vec<u8>) -> Self {
         Self {
-            address: Self::calculate_address(&code, ConsensusParameters::default().chain_id.into()),
+            address: Self::calculate_address(&code),
             code,
             data: Default::default(),
+            #[cfg(feature = "std")]
             provider: None,
         }
     }
 
-    /// Uses default `ConsensusParameters`
-    pub fn load_from(file_path: &str) -> Result<Self> {
-        let code = fs::read(file_path)?;
-        Ok(Self::from_code(code))
-    }
-
-    pub fn with_data(mut self, data: UnresolvedBytes) -> Self {
+    pub fn with_data(mut self, data: Vec<u8>) -> Self {
         self.data = data;
         self
     }
 
     pub fn with_code(self, code: Vec<u8>) -> Self {
-        let address = Self::calculate_address(&code, self.consensus_parameters().chain_id.into());
+        let address = Self::calculate_address(&code);
         Self {
             code,
             address,
-            ..self
-        }
-    }
-
-    pub fn with_provider(self, provider: Provider) -> Self {
-        let address =
-            Self::calculate_address(&self.code, provider.consensus_parameters().chain_id.into());
-        Self {
-            address,
-            provider: Some(provider),
             ..self
         }
     }
@@ -102,33 +76,49 @@ impl Predicate {
     pub fn with_configurables(mut self, configurables: impl Into<Configurables>) -> Self {
         let configurables: Configurables = configurables.into();
         configurables.update_constants_in(&mut self.code);
-        let address =
-            Self::calculate_address(&self.code, self.consensus_parameters().chain_id.into());
+        let address = Self::calculate_address(&self.code);
         self.address = address;
         self
     }
 }
 
+#[cfg(feature = "std")]
+impl Predicate {
+    pub fn provider(&self) -> Option<&Provider> {
+        self.provider.as_ref()
+    }
+
+    pub fn set_provider(&mut self, provider: Provider) {
+        self.provider = Some(provider);
+    }
+
+    pub fn with_provider(self, provider: Provider) -> Self {
+        Self {
+            provider: Some(provider),
+            ..self
+        }
+    }
+}
+
+#[cfg(feature = "std")]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl ViewOnlyAccount for Predicate {
     fn address(&self) -> &Bech32Address {
         self.address()
     }
 
-    fn try_provider(&self) -> AccountResult<&Provider> {
-        self.provider.as_ref().ok_or(AccountError::no_provider())
+    fn try_provider(&self) -> Result<&Provider> {
+        self.provider.as_ref().ok_or_else(try_provider_error)
     }
-}
 
-#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
-impl Account for Predicate {
     async fn get_asset_inputs_for_amount(
         &self,
         asset_id: AssetId,
         amount: u64,
-        _witness_index: Option<u8>,
+        excluded_coins: Option<Vec<CoinTypeId>>,
     ) -> Result<Vec<Input>> {
         Ok(self
-            .get_spendable_resources(asset_id, amount)
+            .get_spendable_resources(asset_id, amount, excluded_coins)
             .await?
             .into_iter()
             .map(|resource| {
@@ -136,35 +126,7 @@ impl Account for Predicate {
             })
             .collect::<Vec<Input>>())
     }
-
-    /// Add base asset inputs to the transaction to cover the estimated fee.
-    /// The original base asset amount cannot be calculated reliably from
-    /// the existing transaction inputs because the selected resources may exceed
-    /// the required amount to avoid dust. Therefore we require it as an argument.
-    ///
-    /// Requires contract inputs to be at the start of the transactions inputs vec
-    /// so that their indexes are retained
-    async fn add_fee_resources<Tb: TransactionBuilder>(
-        &self,
-        mut tb: Tb,
-        previous_base_amount: u64,
-        _witness_index: Option<u8>,
-    ) -> Result<Tb::TxType> {
-        let consensus_parameters = self.try_provider()?.consensus_parameters();
-        tb = tb.set_consensus_parameters(consensus_parameters);
-
-        let new_base_amount =
-            calculate_base_amount_with_fee(&tb, &consensus_parameters, previous_base_amount);
-
-        let new_base_inputs = self
-            .get_asset_inputs_for_amount(BASE_ASSET_ID, new_base_amount, None)
-            .await?;
-
-        adjust_inputs(&mut tb, new_base_inputs);
-        adjust_outputs(&mut tb, self.address(), new_base_amount);
-
-        let tx = tb.build()?;
-
-        Ok(tx)
-    }
 }
+
+#[cfg(feature = "std")]
+impl Account for Predicate {}

@@ -1,15 +1,12 @@
 #[cfg(test)]
 mod tests {
-    use fuels::{
-        core::codec::try_from_bytes,
-        prelude::{AssetId, ContractId, Result},
-    };
+    use fuels::prelude::Result;
 
     #[tokio::test]
     #[allow(unused_variables)]
     async fn transform_json_to_bindings() -> Result<()> {
         use fuels::test_helpers::launch_provider_and_get_wallet;
-        let wallet = launch_provider_and_get_wallet().await;
+        let wallet = launch_provider_and_get_wallet().await?;
         {
             // ANCHOR: use_abigen
             use fuels::prelude::*;
@@ -28,68 +25,43 @@ mod tests {
                 name = "MyContract",
                 abi = r#"
             {
-                "types": [
-                  {
-                    "typeId": 0,
-                    "type": "u64",
-                    "components": null,
-                    "typeParameters": null
-                  }
-                ],
-                "functions": [
-                  {
-                    "inputs": [
-                      {
-                        "name": "value",
-                        "type": 0,
-                        "typeArguments": null
-                      }
-                    ],
-                    "name": "initialize_counter",
-                    "output": {
-                      "name": "",
-                      "type": 0,
-                      "typeArguments": null
+              "programType": "contract",
+              "specVersion": "1",
+              "encodingVersion": "1",
+              "concreteTypes": [
+                {
+                  "concreteTypeId": "1506e6f44c1d6291cdf46395a8e573276a4fa79e8ace3fc891e092ef32d1b0a0",
+                  "type": "u64"
+                }
+              ],
+              "functions": [
+                {
+                  "inputs": [
+                    {
+                      "name": "value",
+                      "concreteTypeId": "1506e6f44c1d6291cdf46395a8e573276a4fa79e8ace3fc891e092ef32d1b0a0"
                     }
-                  },
-                  {
-                    "inputs": [
-                      {
-                        "name": "value",
-                        "type": 0,
-                        "typeArguments": null
-                      }
-                    ],
-                    "name": "increment_counter",
-                    "output": {
-                      "name": "",
-                      "type": 0,
-                      "typeArguments": null
+                  ],
+                  "name": "initialize_counter",
+                  "output": "1506e6f44c1d6291cdf46395a8e573276a4fa79e8ace3fc891e092ef32d1b0a0"
+                },
+                {
+                  "inputs": [
+                    {
+                      "name": "value",
+                      "concreteTypeId": "1506e6f44c1d6291cdf46395a8e573276a4fa79e8ace3fc891e092ef32d1b0a0"
                     }
-                  }
-                ]
-              }
+                  ],
+                  "name": "increment_counter",
+                  "output": "1506e6f44c1d6291cdf46395a8e573276a4fa79e8ace3fc891e092ef32d1b0a0"
+                }
+              ],
+              "metadataTypes": []
+            }
             "#
             ));
             // ANCHOR_END: abigen_with_string
         }
-        Ok(())
-    }
-
-    #[test]
-    fn manual_decode_of_native_types() -> Result<()> {
-        // ANCHOR: manual_decode_native
-        let contract_id_bytes = [0xFF; 32];
-        let contract_id = ContractId::new(contract_id_bytes);
-
-        let asset_id_bytes = [0xFF; 32];
-        let asset_id = AssetId::new(asset_id_bytes);
-
-        let bytes: Vec<u8> = [contract_id_bytes, asset_id_bytes].concat();
-        let expected: (ContractId, AssetId) = try_from_bytes(&bytes)?;
-
-        assert_eq!(expected, (contract_id, asset_id));
-        // ANCHOR_END: manual_decode_native
         Ok(())
     }
 }

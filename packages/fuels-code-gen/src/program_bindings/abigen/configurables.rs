@@ -19,7 +19,7 @@ impl ResolvedConfigurable {
     pub fn new(configurable: &FullConfigurable) -> Result<ResolvedConfigurable> {
         let type_application = &configurable.application;
         Ok(ResolvedConfigurable {
-            name: safe_ident(&format!("set_{}", configurable.name)),
+            name: safe_ident(&format!("with_{}", configurable.name)),
             ttype: TypeResolver::default().resolve(type_application)?,
             offset: configurable.offset,
         })
@@ -50,7 +50,8 @@ fn generate_struct_decl(configurable_struct_name: &Ident) -> TokenStream {
     quote! {
         #[derive(Clone, Debug, Default)]
         pub struct #configurable_struct_name {
-            offsets_with_data: ::std::vec::Vec<(u64, ::std::vec::Vec<u8>)>
+            offsets_with_data: ::std::vec::Vec<(u64, ::std::vec::Vec<u8>)>,
+            encoder: ::fuels::core::codec::ABIEncoder,
         }
     }
 }
@@ -59,20 +60,23 @@ fn generate_struct_impl(
     configurable_struct_name: &Ident,
     resolved_configurables: &[ResolvedConfigurable],
 ) -> TokenStream {
-    let setter_methods = generate_setter_methods(resolved_configurables);
+    let builder_methods = generate_builder_methods(resolved_configurables);
 
     quote! {
         impl #configurable_struct_name {
-            pub fn new() -> Self {
-                ::std::default::Default::default()
+            pub fn new(encoder_config: ::fuels::core::codec::EncoderConfig) -> Self {
+                Self {
+                    encoder: ::fuels::core::codec::ABIEncoder::new(encoder_config),
+                    ..::std::default::Default::default()
+                }
             }
 
-            #setter_methods
+            #builder_methods
         }
     }
 }
 
-fn generate_setter_methods(resolved_configurables: &[ResolvedConfigurable]) -> TokenStream {
+fn generate_builder_methods(resolved_configurables: &[ResolvedConfigurable]) -> TokenStream {
     let methods = resolved_configurables.iter().map(
         |ResolvedConfigurable {
              name,
@@ -81,9 +85,12 @@ fn generate_setter_methods(resolved_configurables: &[ResolvedConfigurable]) -> T
          }| {
             let encoder_code = generate_encoder_code(ttype);
             quote! {
-                pub fn #name(mut self, value: #ttype) -> Self{
-                    self.offsets_with_data.push((#offset, #encoder_code));
-                    self
+                #[allow(non_snake_case)]
+                // Generate the `with_XXX` methods for setting the configurables
+                pub fn #name(mut self, value: #ttype) -> ::fuels::prelude::Result<Self> {
+                    let encoded = #encoder_code?;
+                    self.offsets_with_data.push((#offset, encoded));
+                    ::fuels::prelude::Result::Ok(self)
                 }
             }
         },
@@ -96,11 +103,9 @@ fn generate_setter_methods(resolved_configurables: &[ResolvedConfigurable]) -> T
 
 fn generate_encoder_code(ttype: &ResolvedType) -> TokenStream {
     quote! {
-        ::fuels::core::codec::ABIEncoder::encode(&[
+        self.encoder.encode(&[
                 <#ttype as ::fuels::core::traits::Tokenizable>::into_token(value)
             ])
-            .expect("Cannot encode configurable data")
-            .resolve(0)
     }
 }
 

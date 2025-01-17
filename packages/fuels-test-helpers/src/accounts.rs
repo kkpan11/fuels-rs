@@ -1,16 +1,14 @@
-use std::{mem::size_of, net::SocketAddr};
+use std::mem::size_of;
 
-#[cfg(feature = "fuel-core-lib")]
-use fuel_core::service::Config;
-use fuel_core_chain_config::ChainConfig;
-use fuels_accounts::{
-    fuel_crypto::SecretKey, provider::Provider, wallet::WalletUnlocked, ViewOnlyAccount,
+use fuel_crypto::SecretKey;
+use fuels_accounts::wallet::WalletUnlocked;
+use fuels_core::types::errors::Result;
+
+use crate::{
+    node_types::{ChainConfig, NodeConfig},
+    setup_custom_assets_coins, setup_test_provider,
+    wallets_config::*,
 };
-use fuels_core::types::{coin::Coin, message::Message};
-
-#[cfg(not(feature = "fuel-core-lib"))]
-use crate::node::Config;
-use crate::{setup_custom_assets_coins, setup_test_client, wallets_config::*};
 
 /// Launches a local Fuel node, instantiates a provider, and returns a wallet.
 /// The provider and the wallets are instantiated with the default configs.
@@ -18,20 +16,19 @@ use crate::{setup_custom_assets_coins, setup_test_client, wallets_config::*};
 /// # Examples
 /// ```
 /// use fuels_test_helpers::launch_provider_and_get_wallet;
-/// use fuels_accounts::Signer;
 ///
 /// async fn single_wallet() -> Result<(), Box<dyn std::error::Error>> {
-///   let wallet = launch_provider_and_get_wallet().await;
+///   let wallet = launch_provider_and_get_wallet().await?;
 ///   dbg!(wallet.address());
 ///   Ok(())
 /// }
 /// ```
-pub async fn launch_provider_and_get_wallet() -> WalletUnlocked {
+pub async fn launch_provider_and_get_wallet() -> Result<WalletUnlocked> {
     let mut wallets =
         launch_custom_provider_and_get_wallets(WalletsConfig::new(Some(1), None, None), None, None)
-            .await;
+            .await?;
 
-    wallets.pop().unwrap()
+    Ok(wallets.pop().expect("should have one wallet"))
 }
 
 /// Launches a custom node and provider, along with a configurable number of wallets.
@@ -39,7 +36,6 @@ pub async fn launch_provider_and_get_wallet() -> WalletUnlocked {
 /// # Examples
 /// ```
 /// use fuels_test_helpers::launch_custom_provider_and_get_wallets;
-/// use fuels_accounts::Signer;
 /// use fuels_test_helpers::WalletsConfig;
 ///
 /// async fn multiple_wallets() -> Result<(), Box<dyn std::error::Error>> {
@@ -48,7 +44,7 @@ pub async fn launch_provider_and_get_wallet() -> WalletUnlocked {
 ///   let amount = 1;
 ///   let config = WalletsConfig::new(Some(num_wallets), Some(num_coins), Some(amount));
 ///
-///   let mut wallets = launch_custom_provider_and_get_wallets(config, None, None).await;
+///   let mut wallets = launch_custom_provider_and_get_wallets(config, None, None).await?;
 ///   let first_wallet = wallets.pop().unwrap();
 ///   dbg!(first_wallet.address());
 ///   Ok(())
@@ -56,9 +52,9 @@ pub async fn launch_provider_and_get_wallet() -> WalletUnlocked {
 /// ```
 pub async fn launch_custom_provider_and_get_wallets(
     wallet_config: WalletsConfig,
-    provider_config: Option<Config>,
+    node_config: Option<NodeConfig>,
     chain_config: Option<ChainConfig>,
-) -> Vec<WalletUnlocked> {
+) -> Result<Vec<WalletUnlocked>> {
     const SIZE_SECRET_KEY: usize = size_of::<SecretKey>();
     const PADDING_BYTES: usize = SIZE_SECRET_KEY - size_of::<u64>();
     let mut secret_key: [u8; SIZE_SECRET_KEY] = [0; SIZE_SECRET_KEY];
@@ -80,44 +76,22 @@ pub async fn launch_custom_provider_and_get_wallets(
         .flat_map(|wallet| setup_custom_assets_coins(wallet.address(), wallet_config.assets()))
         .collect::<Vec<_>>();
 
-    let (provider, _) = setup_test_provider(all_coins, vec![], provider_config, chain_config).await;
+    let provider = setup_test_provider(all_coins, vec![], node_config, chain_config).await?;
 
     for wallet in &mut wallets {
         wallet.set_provider(provider.clone());
     }
 
-    wallets
-}
-
-/// Setup a test provider with the given coins. We return the SocketAddr so the launched node
-/// client can be connected to more easily (even though it is often ignored).
-/// # Examples
-/// ```
-/// use fuels_test_helpers::setup_test_provider;
-///
-/// async fn test_provider() -> Result<(), Box<dyn std::error::Error>> {
-///   let (_provider, _address) = setup_test_provider(vec![], vec![], None, None).await;
-///   Ok(())
-/// }
-/// ```
-pub async fn setup_test_provider(
-    coins: Vec<Coin>,
-    messages: Vec<Message>,
-    node_config: Option<Config>,
-    chain_config: Option<ChainConfig>,
-) -> (Provider, SocketAddr) {
-    let (client, addr, consensus_parameters) =
-        setup_test_client(coins, messages, node_config, chain_config).await;
-    (Provider::new(client, consensus_parameters), addr)
+    Ok(wallets)
 }
 
 #[cfg(test)]
 mod tests {
-    use fuels_accounts::{fuel_crypto::fuel_types::AssetId, ViewOnlyAccount};
-    use fuels_core::{
-        constants::BASE_ASSET_ID,
-        types::{coin_type::CoinType, errors::Result},
-    };
+    use fuel_core_chain_config::ChainConfig;
+    use fuel_tx::{ConsensusParameters, TxParameters};
+    use fuel_types::AssetId;
+    use fuels_accounts::ViewOnlyAccount;
+    use fuels_core::types::{coin_type::CoinType, errors::Result};
     use rand::Fill;
 
     use crate::{launch_custom_provider_and_get_wallets, AssetConfig, WalletsConfig};
@@ -129,12 +103,16 @@ mod tests {
         let amount = 100;
         let config = WalletsConfig::new(Some(num_wallets), Some(num_coins), Some(amount));
 
-        let wallets = launch_custom_provider_and_get_wallets(config, None, None).await;
+        let wallets = launch_custom_provider_and_get_wallets(config, None, None).await?;
+        let provider = wallets.first().unwrap().try_provider()?;
+        let consensus_parameters = provider.consensus_parameters().await?;
 
         assert_eq!(wallets.len(), num_wallets as usize);
 
         for wallet in &wallets {
-            let coins = wallet.get_coins(BASE_ASSET_ID).await?;
+            let coins = wallet
+                .get_coins(*consensus_parameters.base_asset_id())
+                .await?;
 
             assert_eq!(coins.len(), num_coins as usize);
 
@@ -152,7 +130,7 @@ mod tests {
         let num_wallets = 3;
 
         let asset_base = AssetConfig {
-            id: BASE_ASSET_ID,
+            id: AssetId::zeroed(),
             num_coins: 2,
             coin_amount: 4,
         };
@@ -176,13 +154,13 @@ mod tests {
         let assets = vec![asset_base, asset_1, asset_2];
 
         let config = WalletsConfig::new_multiple_assets(num_wallets, assets.clone());
-        let wallets = launch_custom_provider_and_get_wallets(config, None, None).await;
+        let wallets = launch_custom_provider_and_get_wallets(config, None, None).await?;
         assert_eq!(wallets.len(), num_wallets as usize);
 
         for asset in assets {
             for wallet in &wallets {
                 let resources = wallet
-                    .get_spendable_resources(asset.id, asset.num_coins * asset.coin_amount)
+                    .get_spendable_resources(asset.id, asset.num_coins * asset.coin_amount, None)
                     .await?;
                 assert_eq!(resources.len() as u64, asset.num_coins);
 
@@ -192,7 +170,8 @@ mod tests {
                         CoinType::Coin(coin) => {
                             assert_eq!(&coin.owner, wallet.address())
                         }
-                        CoinType::Message(_) => panic!("Resources contained messages."),
+                        CoinType::Message(_) => panic!("resources contained messages"),
+                        CoinType::Unknown => panic!("resources contained unknown coins"),
                     }
                 }
             }
@@ -207,7 +186,7 @@ mod tests {
         let amount = 100;
         let config = WalletsConfig::new(Some(num_wallets), Some(num_coins), Some(amount));
 
-        let wallets = launch_custom_provider_and_get_wallets(config, None, None).await;
+        let wallets = launch_custom_provider_and_get_wallets(config, None, None).await?;
 
         assert_eq!(
             wallets.get(31).unwrap().address().to_string(),
@@ -218,44 +197,53 @@ mod tests {
 
     #[tokio::test]
     async fn generated_wallets_with_custom_chain_config() -> Result<()> {
-        use fuel_core_chain_config::ChainConfig;
-        use fuel_tx::ConsensusParameters;
+        let mut consensus_parameters = ConsensusParameters::default();
+
+        let block_gas_limit = 10_000_000_000;
+        consensus_parameters.set_block_gas_limit(block_gas_limit);
+
+        let max_gas_per_tx = 10_000_000_000;
+        let tx_params = TxParameters::default().with_max_gas_per_tx(max_gas_per_tx);
+        consensus_parameters.set_tx_params(tx_params);
 
         let chain_config = ChainConfig {
-            transaction_parameters: ConsensusParameters::DEFAULT
-                .with_max_gas_per_tx(10_000_000_000),
-            block_gas_limit: 10_000_000_000,
+            consensus_parameters,
             ..ChainConfig::default()
         };
 
+        let num_wallets = 4;
+        let num_coins = 3;
+        let coin_amount = 2_000_000_000;
         let wallets = launch_custom_provider_and_get_wallets(
-            WalletsConfig::new(Some(4), Some(3), Some(2_000_000_000)),
+            WalletsConfig::new(Some(num_wallets), Some(num_coins), Some(coin_amount)),
             None,
             Some(chain_config),
         )
-        .await;
+        .await?;
 
-        assert_eq!(wallets.len(), 4);
+        assert_eq!(wallets.len() as u64, num_wallets);
 
         for wallet in wallets.into_iter() {
             assert_eq!(
                 wallet
                     .try_provider()?
-                    .client
-                    .chain_info()
+                    .consensus_parameters()
                     .await?
-                    .consensus_parameters
-                    .max_gas_per_tx,
-                10_000_000_000
+                    .tx_params()
+                    .max_gas_per_tx(),
+                max_gas_per_tx
             );
-            assert_eq!(wallet.get_coins(AssetId::default()).await?.len(), 3);
             assert_eq!(
-                wallet
+                wallet.get_coins(AssetId::zeroed()).await?.len() as u64,
+                num_coins
+            );
+            assert_eq!(
+                *wallet
                     .get_balances()
                     .await?
                     .get("0000000000000000000000000000000000000000000000000000000000000000")
-                    .expect("Failed to get value"),
-                &6_000_000_000
+                    .expect("failed to get value"),
+                (num_coins * coin_amount) as u128
             );
         }
 

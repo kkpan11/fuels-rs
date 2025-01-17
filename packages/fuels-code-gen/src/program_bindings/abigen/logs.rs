@@ -10,12 +10,12 @@ pub(crate) fn log_formatters_instantiation_code(
 ) -> TokenStream {
     let resolved_logs = resolve_logs(logged_types);
     let log_id_log_formatter_pairs = generate_log_id_log_formatter_pairs(&resolved_logs);
-    quote! {::fuels::programs::logs::log_formatters_lookup(vec![#(#log_id_log_formatter_pairs),*], #contract_id)}
+    quote! {::fuels::core::codec::log_formatters_lookup(vec![#(#log_id_log_formatter_pairs),*], #contract_id)}
 }
 
 #[derive(Debug)]
 struct ResolvedLog {
-    log_id: u64,
+    log_id: String,
     log_formatter: TokenStream,
 }
 
@@ -29,9 +29,9 @@ fn resolve_logs(logged_types: &[FullLoggedType]) -> Vec<ResolvedLog> {
                 .expect("Failed to resolve log type");
 
             ResolvedLog {
-                log_id: l.log_id,
+                log_id: l.log_id.clone(),
                 log_formatter: quote! {
-                    ::fuels::programs::logs::LogFormatter::new::<#resolved_type>()
+                    ::fuels::core::codec::LogFormatter::new::<#resolved_type>()
                 },
             }
         })
@@ -42,11 +42,11 @@ fn generate_log_id_log_formatter_pairs(resolved_logs: &[ResolvedLog]) -> Vec<Tok
     resolved_logs
         .iter()
         .map(|r| {
-            let id = r.log_id;
+            let id = &r.log_id;
             let log_formatter = &r.log_formatter;
 
             quote! {
-                (#id, #log_formatter)
+                (#id.to_string(), #log_formatter)
             }
         })
         .collect()

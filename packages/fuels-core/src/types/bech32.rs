@@ -4,9 +4,13 @@ use std::{
 };
 
 use bech32::{FromBase32, ToBase32, Variant::Bech32m};
-use fuel_tx::{Address, Bytes32, ContractId};
+use fuel_tx::{Address, Bytes32, ContractId, ContractIdExt};
+use fuel_types::AssetId;
 
-use crate::types::errors::{Error, Result};
+use crate::types::{
+    errors::{Error, Result},
+    Bits256,
+};
 
 // Fuel Network human-readable part for bech32 encoding
 pub const FUEL_BECH32_HRP: &str = "fuel";
@@ -125,6 +129,14 @@ impl From<ContractId> for Bech32ContractId {
             hrp: FUEL_BECH32_HRP.to_string(),
             hash: Bytes32::new(*contract_id),
         }
+    }
+}
+
+impl Bech32ContractId {
+    /// Creates an `AssetId` from the `Bech32ContractId` and `sub_id`.
+    pub fn asset_id(&self, sub_id: &Bits256) -> AssetId {
+        let sub_id = Bytes32::from(sub_id.0);
+        ContractId::from(self).asset_id(&sub_id)
     }
 }
 

@@ -1,26 +1,24 @@
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use fuels::prelude::Result;
 
+    #[ignore = "testnet currently not compatible with the sdk"]
     #[tokio::test]
-    /// This test will not work for as no endpoint supports the new `fuel-core` release yet
-    /// TODO: https://github.com/FuelLabs/fuels-rs/issues/978
-    #[ignore]
-    async fn connect_to_fuel_node() {
+    async fn connect_to_fuel_node() -> Result<()> {
         // ANCHOR: connect_to_testnet
         use std::str::FromStr;
 
-        use fuels::{accounts::fuel_crypto::SecretKey, prelude::*};
+        use fuels::{crypto::SecretKey, prelude::*};
 
         // Create a provider pointing to the testnet.
-        // This example will not work as the testnet does not support the new version of fuel-core
-        // yet
-        let provider = Provider::connect("beta-3.fuel.network").await.unwrap();
+        let provider = Provider::connect("testnet.fuel.network").await.unwrap();
 
         // Setup a private key
-        let secret =
-            SecretKey::from_str("a1447cd75accc6b71a976fd3401a1f6ce318d27ba660b0315ee6ac347bf39568")
-                .unwrap();
+        let secret = SecretKey::from_str(
+            "a1447cd75accc6b71a976fd3401a1f6ce318d27ba660b0315ee6ac347bf39568",
+        )?;
 
         // Create the wallet
         let wallet = WalletUnlocked::new_from_private_key(secret, Some(provider));
@@ -29,9 +27,14 @@ mod tests {
         dbg!(wallet.address().to_string());
         // ANCHOR_END: connect_to_testnet
 
+        let provider = setup_test_provider(vec![], vec![], None, None).await?;
+        let port = provider.url().split(':').last().unwrap();
+
         // ANCHOR: local_node_address
-        let _provider = Provider::connect("127.0.0.1:4000").await.unwrap();
+        let _provider = Provider::connect(format!("127.0.0.1:{port}")).await?;
         // ANCHOR_END: local_node_address
+
+        Ok(())
     }
 
     #[tokio::test]
@@ -53,17 +56,25 @@ mod tests {
 
         let coins = setup_single_asset_coins(
             wallet.address(),
-            BASE_ASSET_ID,
+            AssetId::zeroed(),
             number_of_coins,
             amount_per_coin,
         );
         // ANCHOR_END: setup_single_asset
 
-        let (provider, _) = setup_test_provider(coins.clone(), vec![], None, None).await;
+        // ANCHOR: configure_retry
+        let retry_config = RetryConfig::new(3, Backoff::Fixed(Duration::from_secs(2)))?;
+        let provider = setup_test_provider(coins.clone(), vec![], None, None)
+            .await?
+            .with_retry_config(retry_config);
+        // ANCHOR_END: configure_retry
         // ANCHOR_END: setup_test_blockchain
 
         // ANCHOR: get_coins
-        let coins = provider.get_coins(wallet.address(), BASE_ASSET_ID).await?;
+        let consensus_parameters = provider.consensus_parameters().await?;
+        let coins = provider
+            .get_coins(wallet.address(), *consensus_parameters.base_asset_id())
+            .await?;
         assert_eq!(coins.len(), 1);
         // ANCHOR_END: get_coins
 

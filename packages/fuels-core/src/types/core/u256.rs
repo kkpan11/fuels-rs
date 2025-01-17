@@ -6,14 +6,13 @@ use uint::construct_uint;
 use crate::{
     traits::{Parameterize, Tokenizable},
     types::{
-        errors::{error, Error, Result as FuelsResult},
+        errors::{error, Result as FuelsResult},
         param_types::ParamType,
         Token,
     },
 };
 
 construct_uint! {
-    /// 256-bit unsigned integer.
     pub struct U256(4);
 }
 
@@ -31,8 +30,8 @@ impl Tokenizable for U256 {
         match token {
             Token::U256(data) => Ok(data),
             _ => Err(error!(
-                InvalidData,
-                "U256 cannot be constructed from token {token}"
+                Other,
+                "`U256` cannot be constructed from token `{token}`"
             )),
         }
     }

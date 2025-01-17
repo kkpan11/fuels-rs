@@ -1,19 +1,22 @@
 #![cfg(feature = "std")]
 
-use chrono::{DateTime, NaiveDateTime, Utc};
+use chrono::{DateTime, Utc};
 use fuel_core_client::client::types::{
     block::{Block as ClientBlock, Header as ClientHeader},
     primitives::Bytes32,
 };
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Header {
     pub id: Bytes32,
     pub da_height: u64,
-    pub transactions_count: u64,
-    pub message_receipt_count: u64,
+    pub transactions_count: u16,
+    pub message_receipt_count: u32,
     pub transactions_root: Bytes32,
-    pub message_receipt_root: Bytes32,
+    pub message_outbox_root: Bytes32,
+    pub event_inbox_root: Bytes32,
+    pub consensus_parameters_version: u32,
+    pub state_transition_bytecode_version: u32,
     pub height: u32,
     pub prev_root: Bytes32,
     pub time: Option<DateTime<Utc>>,
@@ -22,8 +25,7 @@ pub struct Header {
 
 impl From<ClientHeader> for Header {
     fn from(client_header: ClientHeader) -> Self {
-        let naive = NaiveDateTime::from_timestamp_opt(client_header.time.to_unix(), 0);
-        let time = naive.map(|time| DateTime::<Utc>::from_utc(time, Utc));
+        let time = DateTime::from_timestamp(client_header.time.to_unix(), 0);
 
         Self {
             id: client_header.id,
@@ -31,7 +33,10 @@ impl From<ClientHeader> for Header {
             transactions_count: client_header.transactions_count,
             message_receipt_count: client_header.message_receipt_count,
             transactions_root: client_header.transactions_root,
-            message_receipt_root: client_header.message_receipt_root,
+            message_outbox_root: client_header.message_outbox_root,
+            event_inbox_root: client_header.event_inbox_root,
+            consensus_parameters_version: client_header.consensus_parameters_version,
+            state_transition_bytecode_version: client_header.state_transition_bytecode_version,
             height: client_header.height,
             prev_root: client_header.prev_root,
             time,
@@ -40,7 +45,7 @@ impl From<ClientHeader> for Header {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Block {
     pub id: Bytes32,
     pub header: Header,

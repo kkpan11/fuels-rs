@@ -8,7 +8,7 @@ There are two main ways of working with contracts in the SDK: deploying a contra
 <!-- build:example:start -->
 Once you've written a contract in Sway and compiled it with `forc build`, you'll have in your hands two important artifacts: the compiled binary file and the JSON ABI file.
 <!-- build:example:end -->
-> Note: Read [here](https://fuellabs.github.io/sway/master/book/introduction/sway_quickstart.html) for more on how to work with Sway.
+> Note: Read [here](https://docs.fuel.network/guides/quickstart/) for more on how to work with Sway.
 
 Below is how you can deploy your contracts using the SDK. For more details about each component in this process, read [The abigen macro](../abigen/the-abigen-macro.md), [The FuelVM binary file](./the-fuelvm-binary-file.md), and [The JSON ABI file](../abigen/the-json-abi-file.md).
 
@@ -26,7 +26,8 @@ Alternatively, you can use `LoadConfiguration` to configure how the contract is 
 - Load the same contract binary with `Salt` to get a new `contract_id`
 - Change the contract's storage slots
 - Update the contract's configurables
-    > Note: The next section will give more information on how `configurables` can be used.
+
+> Note: The next section will give more information on how `configurables` can be used.
 
 Additionally, you can set custom `TxParameters` when deploying the loaded contract.
 
@@ -39,3 +40,5 @@ After the contract is deployed, you can use the contract's methods like this:
 ```rust,ignore
 {{#include ../../../examples/contracts/src/lib.rs:use_deployed_contract}}
 ```
+
+> Note: When redeploying an existing `Contract`, ensure that you initialize it with a unique salt to prevent deployment failures caused by a contract ID collision. To accomplish this, utilize the `with_salt` method to clone the existing `Contract` with a new salt.

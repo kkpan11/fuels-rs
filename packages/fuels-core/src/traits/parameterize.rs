@@ -1,8 +1,8 @@
 use fuel_types::{Address, AssetId, ContractId};
 
 use crate::types::{
-    enum_variants::EnumVariants, param_types::ParamType, AsciiString, Bits256, Bytes, RawSlice,
-    SizedAsciiString,
+    param_types::{EnumVariants, ParamType},
+    AsciiString, Bits256, Bytes, RawSlice, SizedAsciiString,
 };
 
 /// `abigen` requires `Parameterized` to construct nested types. It is also used by `try_from_bytes`
@@ -43,14 +43,15 @@ impl Parameterize for Bytes {
 
 impl Parameterize for String {
     fn param_type() -> ParamType {
-        ParamType::StdString
+        ParamType::String
     }
 }
 
 impl Parameterize for Address {
     fn param_type() -> ParamType {
         ParamType::Struct {
-            fields: vec![ParamType::B256],
+            name: "Address".to_string(),
+            fields: vec![("0".to_string(), ParamType::B256)],
             generics: vec![],
         }
     }
@@ -59,7 +60,8 @@ impl Parameterize for Address {
 impl Parameterize for ContractId {
     fn param_type() -> ParamType {
         ParamType::Struct {
-            fields: vec![ParamType::B256],
+            name: "ContractId".to_string(),
+            fields: vec![("0".to_string(), ParamType::B256)],
             generics: vec![],
         }
     }
@@ -68,7 +70,8 @@ impl Parameterize for ContractId {
 impl Parameterize for AssetId {
     fn param_type() -> ParamType {
         ParamType::Struct {
-            fields: vec![ParamType::B256],
+            name: "AssetId".to_string(),
+            fields: vec![("0".to_string(), ParamType::B256)],
             generics: vec![],
         }
     }
@@ -121,11 +124,15 @@ where
     T: Parameterize,
 {
     fn param_type() -> ParamType {
-        let param_types = vec![ParamType::Unit, T::param_type()];
-        let variants = EnumVariants::new(param_types)
+        let variant_param_types = vec![
+            ("None".to_string(), ParamType::Unit),
+            ("Some".to_string(), T::param_type()),
+        ];
+        let enum_variants = EnumVariants::new(variant_param_types)
             .expect("should never happen as we provided valid Option param types");
         ParamType::Enum {
-            variants,
+            name: "Option".to_string(),
+            enum_variants,
             generics: vec![T::param_type()],
         }
     }
@@ -137,19 +144,23 @@ where
     E: Parameterize,
 {
     fn param_type() -> ParamType {
-        let param_types = vec![T::param_type(), E::param_type()];
-        let variants = EnumVariants::new(param_types.clone())
+        let variant_param_types = vec![
+            ("Ok".to_string(), T::param_type()),
+            ("Err".to_string(), E::param_type()),
+        ];
+        let enum_variants = EnumVariants::new(variant_param_types)
             .expect("should never happen as we provided valid Result param types");
         ParamType::Enum {
-            variants,
-            generics: param_types,
+            name: "Result".to_string(),
+            enum_variants,
+            generics: vec![T::param_type(), E::param_type()],
         }
     }
 }
 
 impl<const LEN: usize> Parameterize for SizedAsciiString<LEN> {
     fn param_type() -> ParamType {
-        ParamType::String(LEN)
+        ParamType::StringArray(LEN)
     }
 }
 
@@ -207,7 +218,7 @@ mod tests {
     fn sized_ascii_string_is_parameterized_correctly() {
         let param_type = SizedAsciiString::<3>::param_type();
 
-        assert!(matches!(param_type, ParamType::String(3)));
+        assert!(matches!(param_type, ParamType::StringArray(3)));
     }
 
     #[test]

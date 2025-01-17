@@ -2,7 +2,7 @@
 
 <!-- This section should talk about the importance of the ABI -->
 <!-- abi:example:start -->
-Whether you want to deploy or connect to a pre-existing smart contract, the JSON ABI file is extremely important: it's what tells the SDK about the [ABI methods](https://fuellabs.github.io/sway/master/book/introduction/sway_quickstart.html#abi) in your smart contracts.
+Whether you want to deploy or connect to a pre-existing smart contract, the JSON ABI file is extremely important: it's what tells the SDK about the [ABI methods](https://docs.fuel.network/guides/quickstart/building-a-smart-contract/#abi) in your smart contracts.
 <!-- abi:example:end -->
 
 For the same example Sway code as above:
@@ -24,7 +24,7 @@ impl MyContract for Contract {
 The JSON ABI file looks like this:
 
 ```json
-$ cat out/debug/my-test-abi.json
+$ cat out/release/my-test-abi.json
 [
   {
     "type": "function",

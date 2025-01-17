@@ -1,50 +1,38 @@
 //! Testing helpers/utilities for Fuel SDK.
 extern crate core;
 
-use std::net::SocketAddr;
-
 #[cfg(feature = "fuels-accounts")]
 pub use accounts::*;
-#[cfg(feature = "fuel-core-lib")]
-pub use fuel_core::service::DbType;
-#[cfg(feature = "fuel-core-lib")]
-use fuel_core::service::FuelService;
-#[cfg(feature = "fuel-core-lib")]
-pub use fuel_core::service::{config::Trigger, Config};
-use fuel_core_chain_config::ChainConfig;
-#[cfg(feature = "fuel-core-lib")]
-use fuel_core_chain_config::StateConfig;
-use fuel_core_client::client::FuelClient;
-use fuel_tx::{Bytes32, ConsensusParameters, UtxoId};
+use fuel_tx::{Bytes32, ConsensusParameters, ContractParameters, TxParameters, UtxoId};
 use fuel_types::{AssetId, Nonce};
-use fuels_core::{
-    constants::BASE_ASSET_ID,
-    types::{
-        bech32::Bech32Address,
-        coin::{Coin, CoinStatus},
-        message::{Message, MessageStatus},
-    },
+use fuels_accounts::provider::Provider;
+use fuels_core::types::{
+    bech32::Bech32Address,
+    coin::{Coin, CoinStatus},
+    errors::Result,
+    message::{Message, MessageStatus},
 };
-#[cfg(not(feature = "fuel-core-lib"))]
-pub use node::*;
-#[cfg(not(feature = "fuel-core-lib"))]
-use portpicker::is_free;
-use rand::Fill;
-#[cfg(feature = "fuel-core-lib")]
-pub use utils::{into_coin_configs, into_message_configs};
+pub use node_types::*;
+use rand::{rngs::StdRng, Fill, Rng, SeedableRng};
+use utils::{into_coin_configs, into_message_configs};
 pub use wallets_config::*;
+mod node_types;
 
 #[cfg(not(feature = "fuel-core-lib"))]
-pub mod node;
+pub(crate) mod fuel_bin_service;
 
 #[cfg(feature = "fuels-accounts")]
 mod accounts;
+
+pub use service::*;
+mod service;
+
 mod utils;
 mod wallets_config;
 
 /// Create a vector of `num_asset`*`coins_per_asset` UTXOs and a vector of the unique corresponding
 /// asset IDs. `AssetId`. Each UTXO (=coin) contains `amount_per_coin` amount of a random asset. The
-/// output of this function can be used with `setup_test_client` to get a client with some
+/// output of this function can be used with `setup_test_provider` to get a client with some
 /// pre-existing coins, with `num_asset` different asset ids. Note that one of the assets is the
 /// base asset to pay for gas.
 pub fn setup_multiple_assets_coins(
@@ -58,10 +46,12 @@ pub fn setup_multiple_assets_coins(
     let asset_ids = (0..(num_asset - 1))
         .map(|_| {
             let mut random_asset_id = AssetId::zeroed();
-            random_asset_id.try_fill(&mut rng).unwrap();
+            random_asset_id
+                .try_fill(&mut rng)
+                .expect("failed to fill with random data");
             random_asset_id
         })
-        .chain([BASE_ASSET_ID].into_iter())
+        .chain([AssetId::zeroed()])
         .collect::<Vec<AssetId>>();
 
     let coins = asset_ids
@@ -84,7 +74,7 @@ pub fn setup_custom_assets_coins(owner: &Bech32Address, assets: &[AssetConfig]) 
 }
 
 /// Create a vector of `num_coins` UTXOs containing `amount_per_coin` amount of asset `asset_id`.
-/// The output of this function can be used with `setup_test_client` to get a client with some
+/// The output of this function can be used with `setup_test_provider` to get a client with some
 /// pre-existing coins, but with only one asset ID.
 pub fn setup_single_asset_coins(
     owner: &Bech32Address,
@@ -97,7 +87,8 @@ pub fn setup_single_asset_coins(
     let coins: Vec<Coin> = (1..=num_coins)
         .map(|_i| {
             let mut r = Bytes32::zeroed();
-            r.try_fill(&mut rng).unwrap();
+            r.try_fill(&mut rng)
+                .expect("failed to fill with random data");
             let utxo_id = UtxoId::new(r, 0);
 
             Coin {
@@ -105,7 +96,6 @@ pub fn setup_single_asset_coins(
                 utxo_id,
                 amount: amount_per_coin,
                 asset_id,
-                maturity: Default::default(),
                 status: CoinStatus::Unspent,
                 block_created: Default::default(),
             }
@@ -133,107 +123,80 @@ pub fn setup_single_message(
     }
 }
 
-// Setup a test client with the given coins. We return the SocketAddr so the launched node
-// client can be connected to more easily (even though it is often ignored).
-#[cfg(feature = "fuel-core-lib")]
-#[allow(clippy::let_unit_value)]
-pub async fn setup_test_client(
+pub async fn setup_test_provider(
     coins: Vec<Coin>,
     messages: Vec<Message>,
-    node_config: Option<Config>,
+    node_config: Option<NodeConfig>,
     chain_config: Option<ChainConfig>,
-) -> (FuelClient, SocketAddr, ConsensusParameters) {
+) -> Result<Provider> {
+    let node_config = node_config.unwrap_or_default();
+    let chain_config = chain_config.unwrap_or_else(testnet_chain_config);
+
     let coin_configs = into_coin_configs(coins);
     let message_configs = into_message_configs(messages);
-    let mut chain_conf = chain_config.unwrap_or_else(ChainConfig::local_testnet);
 
-    chain_conf.initial_state = Some(StateConfig {
-        coins: Some(coin_configs),
-        contracts: None,
-        messages: Some(message_configs),
-        ..StateConfig::default()
-    });
+    let state_config = StateConfig {
+        coins: coin_configs,
+        messages: message_configs,
+        ..StateConfig::local_testnet()
+    };
 
-    let mut config = node_config.unwrap_or_else(Config::local_node);
-    config.chain_conf = chain_conf;
+    let srv = FuelService::start(node_config, chain_config, state_config).await?;
 
-    let srv = FuelService::new_node(config).await.unwrap();
-    let address = srv.bound_address;
+    let address = srv.bound_address();
+
     tokio::spawn(async move {
         let _own_the_handle = srv;
         let () = futures::future::pending().await;
     });
 
-    let client = FuelClient::from(address);
-    let consensus_parameters = client
-        .chain_info()
-        .await
-        .expect("Could not retrieve consensus parameters of running client, should not happen")
-        .consensus_parameters
-        .into();
-
-    (client, address, consensus_parameters)
+    Provider::from(address).await
 }
 
-#[cfg(not(feature = "fuel-core-lib"))]
-pub async fn setup_test_client(
-    coins: Vec<Coin>,
-    messages: Vec<Message>,
-    node_config: Option<Config>,
-    chain_config: Option<ChainConfig>,
-) -> (FuelClient, SocketAddr, ConsensusParameters) {
-    let config = node_config.unwrap_or_else(Config::local_node);
-    let requested_port = config.addr.port();
+// Testnet ChainConfig with increased tx size and contract size limits
+fn testnet_chain_config() -> ChainConfig {
+    let mut consensus_parameters = ConsensusParameters::default();
+    let tx_params = TxParameters::default().with_max_size(10_000_000);
+    // on a best effort basis, if we're given an old core we won't fail only because we couldn't
+    // set the limit here
+    let _ = consensus_parameters.set_block_transaction_size_limit(10_000_000);
 
-    let bound_address = if requested_port == 0 {
-        get_socket_address()
-    } else if is_free(requested_port) {
-        config.addr
-    } else {
-        panic!("Error: Address already in use");
-    };
+    let contract_params = ContractParameters::default().with_contract_max_size(1_000_000);
+    consensus_parameters.set_tx_params(tx_params);
+    consensus_parameters.set_contract_params(contract_params);
 
-    new_fuel_node(
-        coins,
-        messages,
-        Config {
-            addr: bound_address,
-            ..config
-        },
-        chain_config,
-    )
-    .await;
+    ChainConfig {
+        consensus_parameters,
+        ..ChainConfig::local_testnet()
+    }
+}
 
-    let client = FuelClient::from(bound_address);
-    server_health_check(&client).await;
-
-    let consensus_parameters = client
-        .chain_info()
-        .await
-        .expect("Could not retrieve consensus parameters of running client should not happen")
-        .consensus_parameters
-        .into();
-
-    (client, bound_address, consensus_parameters)
+pub fn generate_random_salt() -> [u8; 32] {
+    StdRng::from_entropy().gen()
 }
 
 #[cfg(test)]
 mod tests {
-    use std::net::Ipv4Addr;
+    use std::net::{Ipv4Addr, SocketAddr};
 
+    use fuel_tx::{ConsensusParameters, ContractParameters, FeeParameters, TxParameters};
     use fuels_core::types::bech32::FUEL_BECH32_HRP;
 
     use super::*;
 
     #[tokio::test]
-    async fn test_setup_single_asset_coins() -> Result<(), rand::Error> {
+    async fn test_setup_single_asset_coins() -> Result<()> {
         let mut rng = rand::thread_rng();
         let mut addr_data = Bytes32::new([0u8; 32]);
-        addr_data.try_fill(&mut rng)?;
+        addr_data
+            .try_fill(&mut rng)
+            .expect("failed to fill with random data");
         let address = Bech32Address::new("test", addr_data);
 
         let mut asset_id = AssetId::zeroed();
-        asset_id.try_fill(&mut rng)?;
+        asset_id
+            .try_fill(&mut rng)
+            .expect("failed to fill with random data");
 
         let number_of_coins = 11;
         let amount_per_coin = 10;
@@ -250,10 +213,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_setup_multiple_assets_coins() -> Result<(), rand::Error> {
+    async fn test_setup_multiple_assets_coins() -> Result<()> {
         let mut rng = rand::thread_rng();
         let mut addr_data = Bytes32::new([0u8; 32]);
-        addr_data.try_fill(&mut rng)?;
+        addr_data
+            .try_fill(&mut rng)
+            .expect("failed to fill with random data");
         let address = Bech32Address::new("test", addr_data);
 
         let number_of_assets = 7;
@@ -271,7 +236,7 @@ mod tests {
         // Check that the wallet has base assets to pay for gas
         assert!(unique_asset_ids
             .iter()
-            .any(|&asset_id| asset_id == BASE_ASSET_ID));
+            .any(|&asset_id| asset_id == AssetId::zeroed()));
         for asset_id in unique_asset_ids {
             let coins_asset_id: Vec<Coin> = coins
                 .clone()
@@ -289,20 +254,23 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_setup_custom_assets_coins() -> Result<(), rand::Error> {
+    async fn test_setup_custom_assets_coins() -> Result<()> {
         let mut rng = rand::thread_rng();
         let mut hash = [0u8; 32];
-        hash.try_fill(&mut rng)?;
+        hash.try_fill(&mut rng)
+            .expect("failed to fill with random data");
         let address = Bech32Address::new(FUEL_BECH32_HRP, hash);
 
         let asset_base = AssetConfig {
-            id: BASE_ASSET_ID,
+            id: AssetId::zeroed(),
             num_coins: 2,
             coin_amount: 4,
         };
 
         let mut asset_id_1 = AssetId::zeroed();
-        asset_id_1.try_fill(&mut rng)?;
+        asset_id_1
+            .try_fill(&mut rng)
+            .expect("failed to fill with random data");
         let asset_1 = AssetConfig {
             id: asset_id_1,
             num_coins: 6,
@@ -310,7 +278,9 @@ mod tests {
         };
 
         let mut asset_id_2 = AssetId::zeroed();
-        asset_id_2.try_fill(&mut rng)?;
+        asset_id_2
+            .try_fill(&mut rng)
+            .expect("failed to fill with random data");
         let asset_2 = AssetConfig {
             id: asset_id_2,
             num_coins: 10,
@@ -336,75 +306,84 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_setup_test_client_custom_config() -> Result<(), rand::Error> {
+    async fn test_setup_test_provider_custom_config() -> Result<()> {
         let socket = SocketAddr::new(Ipv4Addr::new(127, 0, 0, 1).into(), 4000);
-        let config = Config {
+        let config = NodeConfig {
             addr: socket,
-            utxo_validation: true,
-            manual_blocks_enabled: true,
-            ..Config::local_node()
+            ..NodeConfig::default()
         };
 
-        let (client, bound_addr, _consensus_parameters) =
-            setup_test_client(vec![], vec![], Some(config.clone()), None).await;
-        let node_info = client
+        let provider = setup_test_provider(vec![], vec![], Some(config.clone()), None).await?;
+        let node_info = provider
             .node_info()
             .await
             .expect("Failed to retrieve node info!");
 
-        assert_eq!(bound_addr, socket);
+        assert_eq!(provider.url(), format!("http://127.0.0.1:4000"));
         assert_eq!(node_info.utxo_validation, config.utxo_validation);
 
         Ok(())
     }
 
     #[tokio::test]
-    async fn test_setup_test_client_consensus_parameters_config() {
-        let configured_parameters = ConsensusParameters::DEFAULT
+    async fn test_setup_test_client_consensus_parameters_config() -> Result<()> {
+        let tx_params = TxParameters::default()
             .with_max_gas_per_tx(2)
-            .with_gas_per_byte(2)
-            .with_max_inputs(58)
-            .with_max_storage_slots(83);
+            .with_max_inputs(58);
+        let fee_params = FeeParameters::default().with_gas_per_byte(2);
+        let contract_params = ContractParameters::default().with_max_storage_slots(83);
+
+        let mut consensus_parameters = ConsensusParameters::default();
+        consensus_parameters.set_tx_params(tx_params);
+        consensus_parameters.set_fee_params(fee_params);
+        consensus_parameters.set_contract_params(contract_params);
 
         let chain_config = ChainConfig {
-            transaction_parameters: configured_parameters,
+            consensus_parameters: consensus_parameters.clone(),
             ..ChainConfig::default()
         };
-        let (client, _, client_consensus_parameters) =
-            setup_test_client(vec![], vec![], None, Some(chain_config)).await;
+        let provider = setup_test_provider(vec![], vec![], None, Some(chain_config)).await?;
 
-        let retrieved_parameters: ConsensusParameters = client
-            .chain_info()
-            .await
-            .expect("Failed to retrieve consensus chain info!")
-            .consensus_parameters
-            .into();
+        let retrieved_parameters = provider.consensus_parameters().await?;
 
-        assert_eq!(retrieved_parameters, configured_parameters);
-        assert_eq!(client_consensus_parameters, configured_parameters)
+        assert_eq!(retrieved_parameters, consensus_parameters);
+
+        Ok(())
     }
 
     #[tokio::test]
-    async fn test_chain_config_and_consensus_parameters() {
-        let consensus_parameters_config = ConsensusParameters::DEFAULT
-            .with_max_inputs(123)
-            .with_gas_per_byte(456);
+    async fn test_chain_config_and_consensus_parameters() -> Result<()> {
+        let max_inputs = 123;
+        let gas_per_byte = 456;
 
+        let mut consensus_parameters = ConsensusParameters::default();
+
+        let tx_params = TxParameters::default().with_max_inputs(max_inputs);
+        consensus_parameters.set_tx_params(tx_params);
+
+        let fee_params = FeeParameters::default().with_gas_per_byte(gas_per_byte);
+        consensus_parameters.set_fee_params(fee_params);
+
+        let chain_name = "fuel-0".to_string();
         let chain_config = ChainConfig {
-            chain_name: "Solo_Munib".to_string(),
-            transaction_parameters: consensus_parameters_config,
+            chain_name: chain_name.clone(),
+            consensus_parameters,
             ..ChainConfig::local_testnet()
         };
 
-        let (fuel_client, _, client_consensus_parameters) =
-            setup_test_client(vec![], vec![], None, Some(chain_config)).await;
+        let provider = setup_test_provider(vec![], vec![], None, Some(chain_config)).await?;
 
-        let chain_info = fuel_client.chain_info().await.unwrap();
+        let chain_info = provider.chain_info().await?;
 
-        assert_eq!(chain_info.name, "Solo_Munib");
-        assert_eq!(chain_info.consensus_parameters.max_inputs, 123);
-        assert_eq!(chain_info.consensus_parameters.gas_per_byte, 456);
-        assert_eq!(client_consensus_parameters.gas_per_byte, 456);
-        assert_eq!(client_consensus_parameters.max_inputs, 123);
+        assert_eq!(chain_info.name, chain_name);
+        assert_eq!(
+            chain_info.consensus_parameters.tx_params().max_inputs(),
+            max_inputs
+        );
+        assert_eq!(
+            chain_info.consensus_parameters.fee_params().gas_per_byte(),
+            gas_per_byte
+        );
+        Ok(())
     }
 }

@@ -54,7 +54,7 @@ pub(crate) fn generate_types<'a, T: IntoIterator<Item = &'a FullTypeDeclaration>
 /// Instead of generating bindings for `ttype` this fn will just generate a `pub use` pointing to
 /// the already generated equivalent shared type.
 fn reexport_the_shared_type(ttype: &FullTypeDeclaration, no_std: bool) -> Result<GeneratedCode> {
-    // e.g. some_libary::another_mod::SomeStruct
+    // e.g. some_library::another_mod::SomeStruct
     let type_path = ttype
         .custom_type_path()
         .expect("This must be a custom type due to the previous filter step");
@@ -101,12 +101,8 @@ fn is_type_sdk_provided(type_path: &TypePath) -> bool {
 fn is_type_unused(type_path: &TypePath) -> bool {
     let msg = "Known to be correct";
     [
-        // TODO: To be removed once https://github.com/FuelLabs/fuels-rs/issues/881 is unblocked.
-        TypePath::new("RawBytes").expect(msg),
         TypePath::new("std::vec::RawVec").expect(msg),
         TypePath::new("std::bytes::RawBytes").expect(msg),
-        // TODO: To be removed once https://github.com/FuelLabs/fuels-rs/issues/881 is unblocked.
-        TypePath::new("RawVec").expect(msg),
     ]
     .contains(type_path)
 }
@@ -122,23 +118,24 @@ fn is_type_unused(type_path: &TypePath) -> bool {
 mod tests {
     use std::collections::HashMap;
 
-    use fuel_abi_types::abi::program::{ProgramABI, TypeApplication, TypeDeclaration};
+    use fuel_abi_types::abi::unified_program::{UnifiedTypeApplication, UnifiedTypeDeclaration};
+    use pretty_assertions::assert_eq;
     use quote::quote;
 
     use super::*;
 
     #[test]
     fn test_expand_custom_enum() -> Result<()> {
-        let p = TypeDeclaration {
+        let p = UnifiedTypeDeclaration {
             type_id: 0,
             type_field: String::from("enum MatchaTea"),
             components: Some(vec![
-                TypeApplication {
+                UnifiedTypeApplication {
                     name: String::from("LongIsland"),
                     type_id: 1,
                     ..Default::default()
                 },
-                TypeApplication {
+                UnifiedTypeApplication {
                     name: String::from("MoscowMule"),
                     type_id: 2,
                     ..Default::default()
@@ -150,7 +147,7 @@ mod tests {
             (0, p.clone()),
             (
                 1,
-                TypeDeclaration {
+                UnifiedTypeDeclaration {
                     type_id: 1,
                     type_field: String::from("u64"),
                     ..Default::default()
@@ -158,7 +155,7 @@ mod tests {
             ),
             (
                 2,
-                TypeDeclaration {
+                UnifiedTypeDeclaration {
                     type_id: 2,
                     type_field: String::from("bool"),
                     ..Default::default()
@@ -179,11 +176,11 @@ mod tests {
                 PartialEq,
                 ::fuels::macros::Parameterize,
                 ::fuels::macros::Tokenizable,
-                ::fuels::macros::TryFrom
+                ::fuels::macros::TryFrom,
             )]
-            pub enum MatchaTea<> {
-                LongIsland(u64),
-                MoscowMule(bool)
+            pub enum MatchaTea {
+                LongIsland(::core::primitive::u64),
+                MoscowMule(::core::primitive::bool),
             }
         };
 
@@ -193,7 +190,7 @@ mod tests {
 
     #[test]
     fn test_enum_with_no_variants_cannot_be_constructed() -> Result<()> {
-        let p = TypeDeclaration {
+        let p = UnifiedTypeDeclaration {
             type_id: 0,
             type_field: "enum SomeEmptyEnum".to_string(),
             components: Some(vec![]),
@@ -209,20 +206,20 @@ mod tests {
 
     #[test]
     fn test_expand_struct_inside_enum() -> Result<()> {
-        let inner_struct = TypeApplication {
+        let inner_struct = UnifiedTypeApplication {
             name: String::from("Infrastructure"),
             type_id: 1,
             ..Default::default()
         };
         let enum_components = vec![
             inner_struct,
-            TypeApplication {
+            UnifiedTypeApplication {
                 name: "Service".to_string(),
                 type_id: 2,
                 ..Default::default()
             },
         ];
-        let p = TypeDeclaration {
+        let p = UnifiedTypeDeclaration {
             type_id: 0,
             type_field: String::from("enum Amsterdam"),
             components: Some(enum_components),
@@ -233,7 +230,7 @@ mod tests {
             (0, p.clone()),
             (
                 1,
-                TypeDeclaration {
+                UnifiedTypeDeclaration {
                     type_id: 1,
                     type_field: String::from("struct Building"),
                     components: Some(vec![]),
@@ -242,7 +239,7 @@ mod tests {
             ),
             (
                 2,
-                TypeDeclaration {
+                UnifiedTypeDeclaration {
                     type_id: 2,
                     type_field: String::from("u32"),
                     ..Default::default()
@@ -263,11 +260,11 @@ mod tests {
                 PartialEq,
                 ::fuels::macros::Parameterize,
                 ::fuels::macros::Tokenizable,
-                ::fuels::macros::TryFrom
+                ::fuels::macros::TryFrom,
             )]
-            pub enum Amsterdam<> {
+            pub enum Amsterdam {
                 Infrastructure(self::Building),
-                Service(u32)
+                Service(::core::primitive::u32),
             }
         };
 
@@ -277,12 +274,12 @@ mod tests {
 
     #[test]
     fn test_expand_array_inside_enum() -> Result<()> {
-        let enum_components = vec![TypeApplication {
+        let enum_components = vec![UnifiedTypeApplication {
             name: "SomeArr".to_string(),
             type_id: 1,
             ..Default::default()
         }];
-        let p = TypeDeclaration {
+        let p = UnifiedTypeDeclaration {
             type_id: 0,
             type_field: String::from("enum SomeEnum"),
             components: Some(enum_components),
@@ -292,10 +289,10 @@ mod tests {
             (0, p.clone()),
             (
                 1,
-                TypeDeclaration {
+                UnifiedTypeDeclaration {
                     type_id: 1,
                     type_field: "[u64; 7]".to_string(),
-                    components: Some(vec![TypeApplication {
+                    components: Some(vec![UnifiedTypeApplication {
                         type_id: 2,
                         ..Default::default()
                     }]),
@@ -304,7 +301,7 @@ mod tests {
             ),
             (
                 2,
-                TypeDeclaration {
+                UnifiedTypeDeclaration {
                     type_id: 2,
                     type_field: "u64".to_string(),
                     ..Default::default()
@@ -325,10 +322,10 @@ mod tests {
                 PartialEq,
                 ::fuels::macros::Parameterize,
                 ::fuels::macros::Tokenizable,
-                ::fuels::macros::TryFrom
+                ::fuels::macros::TryFrom,
             )]
-            pub enum SomeEnum < > {
-                SomeArr([u64; 7usize])
+            pub enum SomeEnum {
+                SomeArr([::core::primitive::u64; 7usize]),
             }
         };
 
@@ -338,10 +335,10 @@ mod tests {
 
     #[test]
     fn test_expand_custom_enum_with_enum() -> Result<()> {
-        let p = TypeDeclaration {
+        let p = UnifiedTypeDeclaration {
             type_id: 3,
             type_field: String::from("enum EnumLevel3"),
-            components: Some(vec![TypeApplication {
+            components: Some(vec![UnifiedTypeApplication {
                 name: String::from("El2"),
                 type_id: 2,
                 ..Default::default()
@@ -352,10 +349,10 @@ mod tests {
             (3, p.clone()),
             (
                 2,
-                TypeDeclaration {
+                UnifiedTypeDeclaration {
                     type_id: 2,
                     type_field: String::from("enum EnumLevel2"),
-                    components: Some(vec![TypeApplication {
+                    components: Some(vec![UnifiedTypeApplication {
                         name: String::from("El1"),
                         type_id: 1,
                         ..Default::default()
@@ -365,10 +362,10 @@ mod tests {
             ),
             (
                 1,
-                TypeDeclaration {
+                UnifiedTypeDeclaration {
                     type_id: 1,
                     type_field: String::from("enum EnumLevel1"),
-                    components: Some(vec![TypeApplication {
+                    components: Some(vec![UnifiedTypeApplication {
                         name: String::from("Num"),
                         type_id: 0,
                         ..Default::default()
@@ -378,7 +375,7 @@ mod tests {
             ),
             (
                 0,
-                TypeDeclaration {
+                UnifiedTypeDeclaration {
                     type_id: 0,
                     type_field: String::from("u32"),
                     ..Default::default()
@@ -399,10 +396,10 @@ mod tests {
                 PartialEq,
                 ::fuels::macros::Parameterize,
                 ::fuels::macros::Tokenizable,
-                ::fuels::macros::TryFrom
+                ::fuels::macros::TryFrom,
             )]
-            pub enum EnumLevel3<> {
-                El2(self::EnumLevel2)
+            pub enum EnumLevel3 {
+                El2(self::EnumLevel2),
             }
         };
 
@@ -412,20 +409,20 @@ mod tests {
 
     #[test]
     fn test_expand_custom_struct() -> Result<()> {
-        let p = TypeDeclaration {
+        let p = UnifiedTypeDeclaration {
             type_field: String::from("struct Cocktail"),
             components: Some(vec![
-                TypeApplication {
+                UnifiedTypeApplication {
                     name: String::from("long_island"),
                     type_id: 1,
                     ..Default::default()
                 },
-                TypeApplication {
+                UnifiedTypeApplication {
                     name: String::from("cosmopolitan"),
                     type_id: 2,
                     ..Default::default()
                 },
-                TypeApplication {
+                UnifiedTypeApplication {
                     name: String::from("mojito"),
                     type_id: 3,
                     ..Default::default()
@@ -437,7 +434,7 @@ mod tests {
             (0, p.clone()),
             (
                 1,
-                TypeDeclaration {
+                UnifiedTypeDeclaration {
                     type_id: 1,
                     type_field: String::from("bool"),
                     ..Default::default()
@@ -445,7 +442,7 @@ mod tests {
             ),
             (
                 2,
-                TypeDeclaration {
+                UnifiedTypeDeclaration {
                     type_id: 2,
                     type_field: String::from("u64"),
                     ..Default::default()
@@ -453,7 +450,7 @@ mod tests {
             ),
             (
                 3,
-                TypeDeclaration {
+                UnifiedTypeDeclaration {
                     type_id: 3,
                     type_field: String::from("u32"),
                     ..Default::default()
@@ -474,12 +471,25 @@ mod tests {
                 PartialEq,
                 ::fuels::macros::Parameterize,
                 ::fuels::macros::Tokenizable,
-                ::fuels::macros::TryFrom
+                ::fuels::macros::TryFrom,
             )]
-            pub struct Cocktail < > {
-                pub long_island: bool,
-                pub cosmopolitan: u64,
-                pub mojito: u32
+            pub struct Cocktail {
+                pub long_island: ::core::primitive::bool,
+                pub cosmopolitan: ::core::primitive::u64,
+                pub mojito: ::core::primitive::u32,
+            }
+            impl Cocktail {
+                pub fn new(
+                    long_island: ::core::primitive::bool,
+                    cosmopolitan: ::core::primitive::u64,
+                    mojito: ::core::primitive::u32,
+                ) -> Self {
+                    Self {
+                        long_island,
+                        cosmopolitan,
+                        mojito,
+                    }
+                }
             }
         };
 
@@ -490,7 +500,7 @@ mod tests {
 
     #[test]
     fn test_struct_with_no_fields_can_be_constructed() -> Result<()> {
-        let p = TypeDeclaration {
+        let p = UnifiedTypeDeclaration {
             type_id: 0,
             type_field: "struct SomeEmptyStruct".to_string(),
             components: Some(vec![]),
@@ -507,11 +517,17 @@ mod tests {
                 Debug,
                 Eq,
                 PartialEq,
+                ::core::default::Default,
                 ::fuels::macros::Parameterize,
                 ::fuels::macros::Tokenizable,
-                ::fuels::macros::TryFrom
+                ::fuels::macros::TryFrom,
             )]
-            pub struct SomeEmptyStruct < > {}
+            pub struct SomeEmptyStruct {}
+            impl SomeEmptyStruct {
+                pub fn new() -> Self {
+                    Self {}
+                }
+            }
         };
 
         assert_eq!(actual.code().to_string(), expected.to_string());
@@ -521,16 +537,16 @@ mod tests {
 
     #[test]
     fn test_expand_custom_struct_with_struct() -> Result<()> {
-        let p = TypeDeclaration {
+        let p = UnifiedTypeDeclaration {
             type_id: 0,
             type_field: String::from("struct Cocktail"),
             components: Some(vec![
-                TypeApplication {
+                UnifiedTypeApplication {
                     name: String::from("long_island"),
                     type_id: 1,
                     ..Default::default()
                 },
-                TypeApplication {
+                UnifiedTypeApplication {
                     name: String::from("mojito"),
                     type_id: 2,
                     ..Default::default()
@@ -542,7 +558,7 @@ mod tests {
             (0, p.clone()),
             (
                 1,
-                TypeDeclaration {
+                UnifiedTypeDeclaration {
                     type_id: 1,
                     type_field: String::from("struct Shaker"),
                     components: Some(vec![]),
@@ -551,7 +567,7 @@ mod tests {
             ),
             (
                 2,
-                TypeDeclaration {
+                UnifiedTypeDeclaration {
                     type_id: 2,
                     type_field: String::from("u32"),
                     ..Default::default()
@@ -572,142 +588,23 @@ mod tests {
                 PartialEq,
                 ::fuels::macros::Parameterize,
                 ::fuels::macros::Tokenizable,
-                ::fuels::macros::TryFrom
+                ::fuels::macros::TryFrom,
             )]
-            pub struct Cocktail < > {
+            pub struct Cocktail {
                 pub long_island: self::Shaker,
-                pub mojito: u32
+                pub mojito: ::core::primitive::u32,
             }
-        };
-
-        assert_eq!(actual.code().to_string(), expected.to_string());
-        Ok(())
-    }
-
-    #[test]
-    fn test_expand_struct_new_abi() -> Result<()> {
-        let s = r#"
-            {
-                "types": [
-                  {
-                    "typeId": 0,
-                    "type": "u64",
-                    "components": null,
-                    "typeParameters": null
-                  },
-                  {
-                    "typeId": 1,
-                    "type": "b256",
-                    "components": null,
-                    "typeParameters": null
-                  },
-                  {
-                    "typeId": 2,
-                    "type": "bool",
-                    "components": null,
-                    "typeParameters": null
-                  },
-                  {
-                    "typeId": 3,
-                    "type": "struct MyStruct1",
-                    "components": [
-                      {
-                        "name": "x",
-                        "type": 0,
-                        "typeArguments": null
-                      },
-                      {
-                        "name": "y",
-                        "type": 1,
-                        "typeArguments": null
-                      }
-                    ],
-                    "typeParameters": null
-                  },
-                  {
-                    "typeId": 4,
-                    "type": "struct MyStruct2",
-                    "components": [
-                      {
-                        "name": "x",
-                        "type": 2,
-                        "typeArguments": null
-                      },
-                      {
-                        "name": "y",
-                        "type": 3,
-                        "typeArguments": []
-                      }
-                    ],
-                    "typeParameters": null
-                  }
-                ],
-                "functions": [
-                  {
-                    "type": "function",
-                    "inputs": [],
-                    "name": "some_abi_funct",
-                    "output": {
-                      "name": "",
-                      "type": 0,
-                      "typeArguments": []
+            impl Cocktail {
+                pub fn new(long_island: self::Shaker, mojito: ::core::primitive::u32,) -> Self {
+                    Self {
+                        long_island,
+                        mojito,
                     }
-                  }
-                ]
-            }"#;
-        let parsed_abi: ProgramABI = serde_json::from_str(s)?;
-        let types = parsed_abi
-            .types
-            .into_iter()
-            .map(|t| (t.type_id, t))
-            .collect::<HashMap<usize, TypeDeclaration>>();
-
-        let s1 = types.get(&3).unwrap();
-
-        let actual =
-            expand_custom_struct(&FullTypeDeclaration::from_counterpart(s1, &types), false)?;
-
-        let expected = quote! {
-            #[derive(
-                Clone,
-                Debug,
-                Eq,
-                PartialEq,
-                ::fuels::macros::Parameterize,
-                ::fuels::macros::Tokenizable,
-                ::fuels::macros::TryFrom
-            )]
-            pub struct MyStruct1 < > {
-                pub x: u64,
-                pub y: ::fuels::types::Bits256
+                }
             }
         };
 
         assert_eq!(actual.code().to_string(), expected.to_string());
-
-        let s2 = types.get(&4).unwrap();
-
-        let actual =
-            expand_custom_struct(&FullTypeDeclaration::from_counterpart(s2, &types), false)?;
-
-        let expected = quote! {
-            #[derive(
-                Clone,
-                Debug,
-                Eq,
-                PartialEq,
-                ::fuels::macros::Parameterize,
-                ::fuels::macros::Tokenizable,
-                ::fuels::macros::TryFrom
-            )]
-            pub struct MyStruct2 < > {
-                pub x: bool,
-                pub y: self::MyStruct1
-            }
-        };
-
-        assert_eq!(actual.code().to_string(), expected.to_string());
-
         Ok(())
     }
 
@@ -727,6 +624,7 @@ mod tests {
         // then
         let expected_code = quote! {
             #[allow(clippy::too_many_arguments)]
+            #[allow(clippy::disallowed_names)]
             #[no_implicit_prelude]
             pub mod some_shared_lib {
                 use ::core::{
@@ -738,7 +636,7 @@ mod tests {
                     panic,
                 };
 
-                use ::std::{string::ToString, format, vec};
+                use ::std::{string::ToString, format, vec, default::Default};
                 pub use super::super::shared_types::some_shared_lib::SharedStruct;
             }
         };

@@ -14,8 +14,10 @@
 
 pub mod tx {
     pub use fuel_tx::{
-        field, Bytes32, ConsensusParameters, Receipt, Salt, ScriptExecutionResult, StorageSlot,
-        Transaction as FuelTransaction, TxId,
+        field, ConsensusParameters, ContractIdExt, ContractParameters, FeeParameters, GasCosts,
+        PredicateParameters, Receipt, ScriptExecutionResult, ScriptParameters, StorageSlot,
+        Transaction as FuelTransaction, TxId, TxParameters, TxPointer, UpgradePurpose,
+        UploadSubsection, UtxoId, Witness,
     };
 }
 
@@ -31,7 +33,6 @@ pub mod macros {
     pub use fuels_macros::*;
 }
 
-#[cfg(feature = "std")]
 pub mod programs {
     pub use fuels_programs::*;
 }
@@ -40,7 +41,10 @@ pub mod core {
     pub use fuels_core::{codec, constants, offsets, traits, Configurables};
 }
 
-#[cfg(feature = "std")]
+pub mod crypto {
+    pub use fuel_crypto::{Hasher, Message, PublicKey, SecretKey, Signature};
+}
+
 pub mod accounts {
     pub use fuels_accounts::*;
 }
@@ -54,54 +58,38 @@ pub mod test_helpers {
     pub use fuels_test_helpers::*;
 }
 
-#[cfg(feature = "std")]
-pub mod fuel_node {
-    #[cfg(feature = "fuel-core-lib")]
-    pub use fuel_core::chain_config::ChainConfig;
-    #[cfg(feature = "fuel-core-lib")]
-    pub use fuel_core::service::{config::Trigger, Config, DbType, FuelService};
-    #[cfg(not(feature = "fuel-core-lib"))]
-    pub use fuels_test_helpers::node::{ChainConfig, Config, DbType, FuelService, Trigger};
-}
-
-/// Easy imports of frequently used
 #[doc(hidden)]
 pub mod prelude {
-    //! The fuels-rs prelude
-    //!
-    //! The purpose of this module is to alleviate imports of many common types:
-    //!
-    //! ```
-    //! # #![allow(unused_imports)]
-    //! use fuels::prelude::*;
-    //! ```
     #[cfg(feature = "std")]
     pub use super::{
         accounts::{
+            impersonated_account::ImpersonatedAccount,
+            predicate::Predicate,
             provider::*,
             wallet::{generate_mnemonic_phrase, WalletUnlocked},
-            Account, Signer, ViewOnlyAccount,
+            Account, ViewOnlyAccount,
         },
-        fuel_node::*,
+        core::{
+            codec::{LogDecoder, LogId, LogResult},
+            traits::Signer,
+        },
+        macros::setup_program_test,
         programs::{
-            call_utils::TxDependencyExtension,
-            contract::{
-                CallParameters, Contract, LoadConfiguration, MultiContractCallHandler,
-                SettableContract, StorageConfiguration,
-            },
-            logs::{LogDecoder, LogId, LogResult},
+            calls::{CallHandler, CallParameters, ContractDependency, Execution},
+            contract::{Contract, LoadConfiguration, StorageConfiguration},
         },
         test_helpers::*,
+        types::transaction_builders::*,
     };
     pub use super::{
         core::constants::*,
-        macros::{abigen, setup_program_test},
-        tx::Salt,
+        macros::abigen,
+        tx::Receipt,
         types::{
             bech32::{Bech32Address, Bech32ContractId},
             errors::{Error, Result},
             transaction::*,
-            Address, AssetId, Bytes, ContractId, RawSlice,
+            Address, AssetId, Bytes, ContractId, RawSlice, Salt,
         },
     };
 }
